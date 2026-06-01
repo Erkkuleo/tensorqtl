@@ -145,3 +145,69 @@ def test_append_cosinor_does_not_mutate_input():
     sin_t = pd.Series({"S1": 0.5})
     append_cosinor_to_covariates(cov, cos_t, sin_t)
     pd.testing.assert_frame_equal(cov, cov_orig)
+
+
+import subprocess
+
+
+def test_main_cli_end_to_end(tmp_path):
+    meta = tmp_path / "meta.tsv"
+    meta.write_text(
+        "sample_id\thour\n"
+        "S1\t0.0\n"
+        "S2\t6.0\n"
+        "S3\t12.0\n"
+    )
+    cov = tmp_path / "cov.txt"
+    cov.write_text("ID\tS1\tS2\tS3\nPC1\t0.1\t0.2\t0.3\n")
+    out_cov = tmp_path / "out_cov.txt"
+    out_int = tmp_path / "out_int.txt"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            os.path.join(os.path.dirname(__file__), "..", "scripts", "cosinor_preprocess.py"),
+            "--metadata", str(meta),
+            "--covariates", str(cov),
+            "--out-covariates", str(out_cov),
+            "--out-interaction", str(out_int),
+            "--time-col", "hour",
+        ],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+    out_cov_df = pd.read_csv(str(out_cov), sep="\t", index_col=0)
+    assert list(out_cov_df.index) == ["PC1", "cos_t", "sin_t"]
+    assert abs(out_cov_df.loc["cos_t", "S1"] - 1.0) < 1e-6    # cos(0) = 1
+    assert abs(out_cov_df.loc["cos_t", "S2"] - 0.0) < 1e-6    # cos(π/2) = 0
+    assert abs(out_cov_df.loc["cos_t", "S3"] - (-1.0)) < 1e-6  # cos(π) = -1
+
+    out_int_df = pd.read_csv(str(out_int), sep="\t", index_col=0)
+    assert list(out_int_df.columns) == ["cos_t"]
+    assert list(out_int_df.index) == ["S1", "S2", "S3"]
+
+
+def test_main_cli_missing_samples_raises(tmp_path):
+    # Metadata has S1, S2 but covariates has S1, S2, S3 → S3 missing
+    meta = tmp_path / "meta.tsv"
+    meta.write_text("sample_id\thour\nS1\t0.0\nS2\t6.0\n")
+    cov = tmp_path / "cov.txt"
+    cov.write_text("ID\tS1\tS2\tS3\nPC1\t0.1\t0.2\t0.3\n")
+    out_cov = tmp_path / "out_cov.txt"
+    out_int = tmp_path / "out_int.txt"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            os.path.join(os.path.dirname(__file__), "..", "scripts", "cosinor_preprocess.py"),
+            "--metadata", str(meta),
+            "--covariates", str(cov),
+            "--out-covariates", str(out_cov),
+            "--out-interaction", str(out_int),
+            "--time-col", "hour",
+        ],
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    assert "S3" in result.stderr or "S3" in result.stdout

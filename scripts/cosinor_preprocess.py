@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Cosinor preprocessing for circadian eQTL mapping."""
+import argparse
 import math
 import numpy as np
 import pandas as pd
+import sys
 
 
 def parse_time_to_hours(value: str) -> float:
@@ -125,3 +127,57 @@ def make_interaction_df(cos_t: pd.Series) -> pd.DataFrame:
         DataFrame with sample IDs as index, single column 'cos_t'.
     """
     return cos_t.to_frame(name="cos_t")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Compute cosinor (circadian) covariates for tensorQTL interaction mapping. "
+            "Appends cos_t and sin_t to an existing covariates file and writes a separate "
+            "interaction file containing only cos_t."
+        )
+    )
+    parser.add_argument("--metadata", required=True,
+                        help="Sample metadata TSV. First column = sample IDs; must contain --time-col.")
+    parser.add_argument("--covariates", required=True,
+                        help="Existing tensorQTL covariates file (rows=covariates, cols=samples).")
+    parser.add_argument("--out-covariates", required=True,
+                        help="Output path for updated covariates (existing rows + cos_t + sin_t).")
+    parser.add_argument("--out-interaction", required=True,
+                        help="Output path for interaction file (samples x 1 column: cos_t).")
+    parser.add_argument("--time-col", default="hour",
+                        help="Column name for time-of-day in metadata (default: 'hour').")
+    parser.add_argument("--period", type=float, default=24.0,
+                        help="Cycle period in hours (default: 24.0 for circadian).")
+    args = parser.parse_args()
+
+    print(f"Loading metadata from {args.metadata}")
+    hours = load_metadata(args.metadata, time_col=args.time_col)
+
+    print(f"Loading covariates from {args.covariates}")
+    covariates_df = load_covariates(args.covariates)
+
+    covariate_samples = pd.Index(covariates_df.columns)
+    missing = covariate_samples.difference(hours.index)
+    if len(missing) > 0:
+        print(
+            f"ERROR: {len(missing)} samples in covariates have no metadata entry: "
+            f"{missing.tolist()[:10]}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    hours_aligned = hours.loc[covariate_samples]
+    cos_t, sin_t = compute_cosinor(hours_aligned, period=args.period)
+
+    updated_cov = append_cosinor_to_covariates(covariates_df, cos_t, sin_t)
+    updated_cov.to_csv(args.out_covariates, sep="\t")
+    print(f"Wrote updated covariates ({updated_cov.shape[0]} rows) to {args.out_covariates}")
+
+    interaction_df = make_interaction_df(cos_t)
+    interaction_df.to_csv(args.out_interaction, sep="\t")
+    print(f"Wrote interaction file ({interaction_df.shape[0]} samples) to {args.out_interaction}")
+
+
+if __name__ == "__main__":
+    main()
