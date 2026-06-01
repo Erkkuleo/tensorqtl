@@ -81,7 +81,10 @@ def load_covariates(path: str) -> pd.DataFrame:
     Returns:
         DataFrame with covariate names as index, sample IDs as columns.
     """
-    return pd.read_csv(path, sep="\t", index_col=0)
+    # Two-step read avoids a pandas 2.x bug with empty-string index names
+    # that triggers TypeError in _agg_index for this file format.
+    df = pd.read_csv(path, sep="\t")
+    return df.set_index(df.columns[0])
 
 
 def append_cosinor_to_covariates(
