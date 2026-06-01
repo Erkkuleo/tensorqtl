@@ -160,9 +160,10 @@ def main() -> None:
     covariate_samples = pd.Index(covariates_df.columns)
     missing = covariate_samples.difference(hours.index)
     if len(missing) > 0:
+        shown = missing.tolist()[:10]
+        suffix = f" (showing first 10 of {len(missing)})" if len(missing) > 10 else ""
         print(
-            f"ERROR: {len(missing)} samples in covariates have no metadata entry: "
-            f"{missing.tolist()[:10]}",
+            f"ERROR: {len(missing)} samples in covariates have no metadata entry{suffix}: {shown}",
             file=sys.stderr,
         )
         sys.exit(1)
