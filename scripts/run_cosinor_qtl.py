@@ -15,7 +15,6 @@ see docs/cosinor_eqtl.md.
 import argparse
 import os
 import sys
-import numpy as np
 import pandas as pd
 
 
