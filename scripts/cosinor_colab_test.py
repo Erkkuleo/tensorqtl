@@ -56,14 +56,17 @@ if torch.cuda.is_available():
 import pandas as pd
 import numpy as np
 
-cov = pd.read_csv(
-    "example/data/GEUVADIS.445_samples.covariates.txt",
-    sep="\t", index_col=0
-)
-np.random.seed(42)
-hours = np.random.uniform(0, 24, size=len(cov.columns))
+# Read sample IDs from the header line directly — avoids a pandas 2.x
+# crash that affects files with many "NA..."-prefixed column names.
+with open("example/data/GEUVADIS.445_samples.covariates.txt") as f:
+    sample_ids = f.readline().rstrip("\n").split("\t")[1:]
 
-meta = pd.DataFrame({"hour": hours}, index=cov.columns)
+print(f"Found {len(sample_ids)} samples")
+
+np.random.seed(42)
+hours = np.random.uniform(0, 24, size=len(sample_ids))
+
+meta = pd.DataFrame({"hour": hours}, index=sample_ids)
 meta.index.name = "sample_id"
 meta.to_csv("/tmp/meta.tsv", sep="\t")
 print(f"Created metadata for {len(meta)} samples")

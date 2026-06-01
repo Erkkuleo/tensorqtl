@@ -81,10 +81,14 @@ def load_covariates(path: str) -> pd.DataFrame:
     Returns:
         DataFrame with covariate names as index, sample IDs as columns.
     """
-    # Two-step read avoids a pandas 2.x bug with empty-string index names
-    # that triggers TypeError in _agg_index for this file format.
-    df = pd.read_csv(path, sep="\t")
-    return df.set_index(df.columns[0])
+    # Read header manually to avoid a pandas 2.x crash (TypeError in
+    # maybe_convert_objects) that affects files with many columns whose
+    # names trigger type inference (e.g. "NA06984"-style sample IDs).
+    with open(path) as f:
+        sample_ids = f.readline().rstrip("\n").split("\t")[1:]
+    df = pd.read_csv(path, sep="\t", skiprows=1, header=None, index_col=0)
+    df.columns = sample_ids
+    return df
 
 
 def append_cosinor_to_covariates(

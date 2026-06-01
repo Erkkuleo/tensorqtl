@@ -109,9 +109,14 @@ def load_inputs(
     )
 
     print(f"Loading covariates from {covariates_path}")
-    # Two-step read avoids a pandas 2.x bug with empty-string index names
-    _cov = pd.read_csv(covariates_path, sep="\t")
-    covariates_df = _cov.set_index(_cov.columns[0]).T
+    # Read header manually to avoid a pandas 2.x crash (TypeError in
+    # maybe_convert_objects) that affects files with many columns whose
+    # names trigger type inference (e.g. "NA06984"-style sample IDs).
+    with open(covariates_path) as _f:
+        _sample_ids = _f.readline().rstrip("\n").split("\t")[1:]
+    _cov = pd.read_csv(covariates_path, sep="\t", skiprows=1, header=None, index_col=0)
+    _cov.columns = _sample_ids
+    covariates_df = _cov.T
 
     print(f"Loading interaction terms from {interaction_path}")
     interaction_df = pd.read_csv(interaction_path, sep="\t", index_col=0)
