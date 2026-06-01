@@ -11,13 +11,18 @@ and assigns *random* collection times — replace with real hours for real resul
 # ============================================================
 # Cell 1 — Install dependencies
 # ============================================================
-# (torch is pre-installed in Colab; we add the rest)
+# NOTE: After this cell finishes, do Runtime → Restart session,
+#       then run all cells again. The version pins fix a
+#       numpy/pandas ABI mismatch that causes TypeError in Colab.
 """
-!pip install -q \
-    pandas pyarrow scipy \
+!pip install -q -U \
+    "numpy>=2.0.0" \
+    "pandas>=2.2.2" \
+    pyarrow scipy \
     "Pgenlib>=0.90.1" \
     pandas-plink \
     qtl
+print("Installation complete. Go to Runtime → Restart session, then re-run all cells.")
 """
 
 # ============================================================
