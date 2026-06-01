@@ -109,7 +109,9 @@ def load_inputs(
     )
 
     print(f"Loading covariates from {covariates_path}")
-    covariates_df = pd.read_csv(covariates_path, sep="\t", index_col=0).T
+    # Two-step read avoids a pandas 2.x bug with empty-string index names
+    _cov = pd.read_csv(covariates_path, sep="\t")
+    covariates_df = _cov.set_index(_cov.columns[0]).T
 
     print(f"Loading interaction terms from {interaction_path}")
     interaction_df = pd.read_csv(interaction_path, sep="\t", index_col=0)
