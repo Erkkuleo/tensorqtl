@@ -22,20 +22,21 @@ and assigns *random* collection times — replace with real hours for real resul
 
 # ============================================================
 # Cell 2 — Clone the cosinor branch and add it to the path
+# (safe to re-run: deletes old copy and reclones fresh)
 # ============================================================
 """
 import sys, os
 
-REPO = "https://github.com/Erkkuleo/tensorqtl.git"
+REPO   = "https://github.com/Erkkuleo/tensorqtl.git"
 BRANCH = "feat/cosinor-eqtl"
 
-!git clone --depth 1 --branch {BRANCH} {REPO} tensorqtl_repo
+!rm -rf /content/tensorqtl_repo
+!git clone --depth 1 --branch {BRANCH} {REPO} /content/tensorqtl_repo
 
-# Make the tensorqtl package and scripts importable
 sys.path.insert(0, "/content/tensorqtl_repo")
 sys.path.insert(0, "/content/tensorqtl_repo/tensorqtl")
 os.chdir("/content/tensorqtl_repo")
-print("Cloned. Working directory:", os.getcwd())
+print("Working directory:", os.getcwd())
 """
 
 # ============================================================
