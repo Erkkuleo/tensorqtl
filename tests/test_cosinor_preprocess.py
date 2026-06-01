@@ -56,3 +56,83 @@ def test_compute_cosinor_custom_period():
     hours = pd.Series({"S1": 6.0})
     cos_t, _ = compute_cosinor(hours, period=12.0)
     assert abs(cos_t["S1"] - (-1.0)) < 1e-6
+
+
+from cosinor_preprocess import (
+    load_metadata, load_covariates,
+    append_cosinor_to_covariates, make_interaction_df,
+)
+
+
+def test_load_metadata_basic(tmp_path):
+    f = tmp_path / "meta.tsv"
+    f.write_text("sample_id\thour\nS1\t8.0\nS2\t20.5\n")
+    result = load_metadata(str(f), time_col="hour")
+    assert len(result) == 2
+    assert result["S1"] == pytest.approx(8.0)
+    assert result["S2"] == pytest.approx(20.5)
+
+
+def test_load_metadata_missing_column_raises(tmp_path):
+    f = tmp_path / "meta.tsv"
+    f.write_text("sample_id\ttime\nS1\t8.0\n")
+    with pytest.raises(ValueError, match="time_col 'hour'"):
+        load_metadata(str(f), time_col="hour")
+
+
+def test_load_metadata_duplicate_sample_raises(tmp_path):
+    f = tmp_path / "meta.tsv"
+    f.write_text("sample_id\thour\nS1\t8.0\nS1\t12.0\n")
+    with pytest.raises(ValueError, match="[Dd]uplicate"):
+        load_metadata(str(f), time_col="hour")
+
+
+def test_load_metadata_nonnumeric_time_raises(tmp_path):
+    f = tmp_path / "meta.tsv"
+    f.write_text("sample_id\thour\nS1\tnoon\n")
+    with pytest.raises(ValueError):
+        load_metadata(str(f), time_col="hour")
+
+
+def test_load_covariates_basic(tmp_path):
+    f = tmp_path / "cov.txt"
+    f.write_text("ID\tS1\tS2\nPC1\t0.1\t0.2\nPC2\t-0.1\t0.3\n")
+    result = load_covariates(str(f))
+    assert result.shape == (2, 2)
+    assert list(result.index) == ["PC1", "PC2"]
+    assert list(result.columns) == ["S1", "S2"]
+
+
+def test_append_cosinor_to_covariates_adds_rows():
+    cov = pd.DataFrame({"S1": [0.1], "S2": [0.2]}, index=["PC1"])
+    cos_t = pd.Series({"S1": 0.866, "S2": 0.5})
+    sin_t = pd.Series({"S1": 0.5, "S2": 0.866})
+    result = append_cosinor_to_covariates(cov, cos_t, sin_t)
+    assert list(result.index) == ["PC1", "cos_t", "sin_t"]
+    assert result.loc["cos_t", "S1"] == pytest.approx(0.866)
+    assert result.loc["sin_t", "S2"] == pytest.approx(0.866)
+
+
+def test_append_cosinor_raises_if_cos_t_already_present():
+    cov = pd.DataFrame({"S1": [0.1]}, index=["cos_t"])
+    cos_t = pd.Series({"S1": 0.866})
+    sin_t = pd.Series({"S1": 0.5})
+    with pytest.raises(ValueError, match="already present"):
+        append_cosinor_to_covariates(cov, cos_t, sin_t)
+
+
+def test_append_cosinor_raises_if_sin_t_already_present():
+    cov = pd.DataFrame({"S1": [0.1]}, index=["sin_t"])
+    cos_t = pd.Series({"S1": 0.866})
+    sin_t = pd.Series({"S1": 0.5})
+    with pytest.raises(ValueError, match="already present"):
+        append_cosinor_to_covariates(cov, cos_t, sin_t)
+
+
+def test_make_interaction_df_shape_and_name():
+    cos_t = pd.Series({"S1": 0.866, "S2": 0.5})
+    result = make_interaction_df(cos_t)
+    assert isinstance(result, pd.DataFrame)
+    assert result.shape == (2, 1)
+    assert result.columns[0] == "cos_t"
+    assert list(result.index) == ["S1", "S2"]

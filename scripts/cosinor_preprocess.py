@@ -40,3 +40,88 @@ def compute_cosinor(hours: pd.Series, period: float = 24.0) -> tuple:
     cos_t = pd.Series(np.cos(angle.values), index=hours.index, name="cos_t")
     sin_t = pd.Series(np.sin(angle.values), index=hours.index, name="sin_t")
     return cos_t, sin_t
+
+
+def load_metadata(path: str, time_col: str) -> pd.Series:
+    """Load sample metadata and return hour-of-day values.
+
+    File must be tab-separated with a header; the first column is used as
+    sample IDs.
+
+    Args:
+        path: Path to TSV metadata file.
+        time_col: Column name containing time-of-day values.
+
+    Returns:
+        Series of float hours indexed by sample ID.
+
+    Raises:
+        ValueError: If time_col is absent, sample IDs are duplicated,
+                    or any time value cannot be converted to float.
+    """
+    df = pd.read_csv(path, sep="\t", index_col=0)
+    if time_col not in df.columns:
+        raise ValueError(
+            f"time_col '{time_col}' not found in metadata. "
+            f"Available columns: {list(df.columns)}"
+        )
+    if df.index.duplicated().any():
+        dupes = df.index[df.index.duplicated()].tolist()
+        raise ValueError(f"Duplicate sample IDs in metadata: {dupes}")
+    return df[time_col].map(lambda v: parse_time_to_hours(str(v)))
+
+
+def load_covariates(path: str) -> pd.DataFrame:
+    """Load a tensorQTL-format covariates file.
+
+    Format: rows = covariate names, columns = sample IDs (tab-separated).
+
+    Returns:
+        DataFrame with covariate names as index, sample IDs as columns.
+    """
+    return pd.read_csv(path, sep="\t", index_col=0)
+
+
+def append_cosinor_to_covariates(
+    covariates_df: pd.DataFrame, cos_t: pd.Series, sin_t: pd.Series
+) -> pd.DataFrame:
+    """Append cos_t and sin_t rows to a tensorQTL covariates DataFrame.
+
+    Args:
+        covariates_df: Existing covariates (rows=covariate names, cols=samples).
+        cos_t: Cosine values indexed by sample ID (must cover all samples).
+        sin_t: Sine values indexed by sample ID (must cover all samples).
+
+    Returns:
+        New DataFrame with cos_t and sin_t appended as the last two rows.
+
+    Raises:
+        ValueError: If 'cos_t' or 'sin_t' are already present in the index.
+    """
+    for name in ("cos_t", "sin_t"):
+        if name in covariates_df.index:
+            raise ValueError(
+                f"'{name}' already present in covariates index. "
+                "Remove it before re-running cosinor_preprocess.py."
+            )
+    new_rows = pd.DataFrame(
+        [
+            cos_t.reindex(covariates_df.columns).values,
+            sin_t.reindex(covariates_df.columns).values,
+        ],
+        index=["cos_t", "sin_t"],
+        columns=covariates_df.columns,
+    )
+    return pd.concat([covariates_df, new_rows])
+
+
+def make_interaction_df(cos_t: pd.Series) -> pd.DataFrame:
+    """Create a tensorQTL interaction DataFrame for the cos_t term.
+
+    To upgrade to a 2-DF test, change this function to return a
+    2-column DataFrame: pd.DataFrame({"cos_t": cos_t, "sin_t": sin_t}).
+
+    Returns:
+        DataFrame with sample IDs as index, single column 'cos_t'.
+    """
+    return cos_t.to_frame(name="cos_t")
