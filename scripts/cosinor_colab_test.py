@@ -154,7 +154,7 @@ import numpy as np
 
 # -log10 p-values for interaction term
 logp = -np.log10(df["pval_g_x_cos_t"].clip(lower=1e-300))
-pos  = df["tss_distance"]   # distance from gene TSS
+pos  = df["start_distance"]   # distance from gene start (bp)
 
 plt.figure(figsize=(14, 4))
 plt.scatter(pos, logp, s=1, alpha=0.4, color="steelblue")
