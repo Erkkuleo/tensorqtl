@@ -136,3 +136,12 @@ def test_make_interaction_df_shape_and_name():
     assert result.shape == (2, 1)
     assert result.columns[0] == "cos_t"
     assert list(result.index) == ["S1", "S2"]
+
+
+def test_append_cosinor_does_not_mutate_input():
+    cov = pd.DataFrame({"S1": [0.1]}, index=["PC1"])
+    cov_orig = cov.copy()
+    cos_t = pd.Series({"S1": 0.866})
+    sin_t = pd.Series({"S1": 0.5})
+    append_cosinor_to_covariates(cov, cos_t, sin_t)
+    pd.testing.assert_frame_equal(cov, cov_orig)
