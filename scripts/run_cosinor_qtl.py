@@ -86,9 +86,15 @@ def load_inputs(
         interaction_df: samples x 1, indexed by sample IDs
     """
     try:
-        sys.path.insert(1, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        from tensorqtl import genotypeio
-        from tensorqtl.core import read_phenotype_bed
+        _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        _pkg_dir = os.path.join(_repo_root, "tensorqtl")
+        # Insert the package directory so submodules can be imported directly
+        # (without triggering tensorqtl/__init__.py which imports optional deps).
+        for _p in (_pkg_dir, _repo_root):
+            if _p not in sys.path:
+                sys.path.insert(1, _p)
+        import genotypeio  # type: ignore[import]
+        from core import read_phenotype_bed  # type: ignore[import]
     except ImportError as e:
         raise ImportError(
             "tensorqtl is not installed. Install it or run from the repo root."
@@ -129,13 +135,19 @@ def run_cosinor_mapping(
     and the top association per gene to:
         <output_dir>/<prefix>.cis_qtl_top_assoc.txt.gz
 
-    Output columns follow standard tensorQTL format. Interaction columns
-    are labeled with the interaction term name (cos_t), e.g.:
-        b_g_x_cos_t, b_g_x_cos_t_se, pval_g_x_cos_t
+    Output columns follow standard tensorQTL format. For a single
+    interaction term named 'cos_t', the columns are:
+        pval_g, b_g, b_g_se          – main SNP effect
+        pval_cos_t, b_cos_t          – main interaction (cos_t) effect
+        pval_g_x_cos_t, b_g_x_cos_t – SNP x cos_t interaction effect
     """
     try:
-        sys.path.insert(1, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        from tensorqtl import cis
+        _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        _pkg_dir = os.path.join(_repo_root, "tensorqtl")
+        for _p in (_pkg_dir, _repo_root):
+            if _p not in sys.path:
+                sys.path.insert(1, _p)
+        import cis  # type: ignore[import]
     except ImportError as e:
         raise ImportError(
             "tensorqtl is not installed. Install it or run from the repo root."
