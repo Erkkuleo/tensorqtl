@@ -203,7 +203,7 @@ def map_nominal(genotype_df, variant_df, phenotype_df, phenotype_pos_df, prefix,
             for c in ['pval_i', 'b_i', 'b_i_se']:
                 var_dict.append((c.replace('_i', f'_i{i}'), c.replace('_i', f'_{v}')))
             for c in ['pval_gi', 'b_gi', 'b_gi_se']:
-                var_dict.append((c.replace('_gi', f'_gi{i}'), c.replace('_gi', f'_g-{v}')))
+                var_dict.append((c.replace('_gi', f'_gi{i}'), c.replace('_gi', f'_g_x_{v}')))
         var_dict = dict(var_dict)
 
     igc = genotypeio.InputGeneratorCis(genotype_df, variant_df, phenotype_df, phenotype_pos_df, group_s=group_s, window=window)
