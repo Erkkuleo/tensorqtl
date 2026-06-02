@@ -534,7 +534,13 @@ def map_nominal(genotype_df, variant_df, phenotype_df, phenotype_pos_df, prefix,
 
     if interaction_df is not None and len(best_assoc) > 0:
         best_assoc = pd.concat(best_assoc, axis=1, sort=False).T.set_index('phenotype_id').infer_objects()
-        for x in ['pval_g', 'pval_i', 'pval_gi']:
+        _pval_cols = ['pval_g']
+        if ni == 1:
+            _pval_cols += ['pval_i', 'pval_gi']
+        else:
+            for _i in range(1, ni + 1):
+                _pval_cols += [f'pval_i{_i}', f'pval_gi{_i}']
+        for x in _pval_cols:
             best_assoc[x] = best_assoc[x].astype(np.float64)
         m = best_assoc['pval_g'].notnull()
         m = m[m].index
