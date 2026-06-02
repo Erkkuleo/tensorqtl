@@ -9,15 +9,24 @@ import sys
 
 def parse_time_to_hours(value: str) -> float:
     """Convert a time value string to fractional hours (0-24).
-    support ISO 8601 timestamps (e.g., "2024-01-15T14:30:00")
+
+    Accepts either a numeric hour (e.g. "14.5") or an ISO 8601 timestamp
+    (e.g. "2024-01-15T14:30:00"). ISO is tried first; if it fails, the
+    value is parsed as a plain float.
     """
+    from datetime import datetime
     try:
-        from datetime import datetime
         dt = datetime.fromisoformat(value)
-        return dt.hour + dt.minute / 60 + dt.second / 3600.0
+        return dt.hour + dt.minute / 60.0 + dt.second / 3600.0
+    except ValueError:
+        pass
+    try:
+        return float(value)
     except (ValueError, TypeError):
         raise ValueError(
-            f"Cannot convert '{value}' to hours. Expected a numeric value (e.g. '14.5')."
+            f"Cannot convert '{value}' to hours. "
+            "Expected a numeric value (e.g. '14.5') or ISO 8601 timestamp "
+            "(e.g. '2024-01-15T14:30:00')."
         )
 
 
@@ -117,16 +126,16 @@ def append_cosinor_to_covariates(
     return pd.concat([covariates_df, new_rows])
 
 
-def make_interaction_df(cos_t: pd.Series) -> pd.DataFrame:
-    """Create a tensorQTL interaction DataFrame for the cos_t term.
+def make_interaction_df(cos_t: pd.Series, sin_t: pd.Series) -> pd.DataFrame:
+    """Create a tensorQTL interaction DataFrame with cos_t and sin_t terms.
 
-    To upgrade to a 2-DF test, change this function to return a
-    2-column DataFrame: pd.DataFrame({"cos_t": cos_t, "sin_t": sin_t}).
+    Both columns are passed to tensorQTL as interaction terms. Use
+    --cosinor-2df in run_cosinor_qtl.py to compute the joint 2-DF p-value.
 
     Returns:
-        DataFrame with sample IDs as index, single column 'cos_t'.
+        DataFrame with sample IDs as index, columns ['cos_t', 'sin_t'].
     """
-    return cos_t.to_frame(name="cos_t")
+    return pd.DataFrame({"cos_t": cos_t, "sin_t": sin_t})
 
 
 def main() -> None:
@@ -175,7 +184,7 @@ def main() -> None:
     updated_cov.to_csv(args.out_covariates, sep="\t")
     print(f"Wrote updated covariates ({updated_cov.shape[0]} rows) to {args.out_covariates}")
 
-    interaction_df = make_interaction_df(cos_t)
+    interaction_df = make_interaction_df(cos_t, sin_t)
     interaction_df.to_csv(args.out_interaction, sep="\t")
     print(f"Wrote interaction file ({interaction_df.shape[0]} samples) to {args.out_interaction}")
 
