@@ -9,19 +9,12 @@ import sys
 
 def parse_time_to_hours(value: str) -> float:
     """Convert a time value string to fractional hours (0-24).
-
-    STUB: currently casts to float. To support ISO 8601 timestamps
-    (e.g., "2024-01-15T14:30:00"), replace the body of this function
-    with ISO 8601 parsing. All downstream code consumes the returned
-    float, so no other changes are needed.
-
-    Replacement example:
-        from datetime import datetime
-        dt = datetime.fromisoformat(value)
-        return dt.hour + dt.minute / 60.0 + dt.second / 3600.0
+    support ISO 8601 timestamps (e.g., "2024-01-15T14:30:00")
     """
     try:
-        return float(value)
+        from datetime import datetime
+        dt = datetime.fromisoformat(value)
+        return dt.hour + dt.minute / 60 + dt.second / 3600.0
     except (ValueError, TypeError):
         raise ValueError(
             f"Cannot convert '{value}' to hours. Expected a numeric value (e.g. '14.5')."
