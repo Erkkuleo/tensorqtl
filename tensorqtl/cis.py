@@ -512,6 +512,12 @@ def map_nominal(genotype_df, variant_df, phenotype_df, phenotype_pos_df, prefix,
                     chr_res_df.loc[m, 'pval_g'] =  get_t_pval(chr_res_df.loc[m, 'pval_g'], idof, log=logp)
                     chr_res_df.loc[m, 'pval_i'] =  get_t_pval(chr_res_df.loc[m, 'pval_i'], idof, log=logp)
                     chr_res_df.loc[m, 'pval_gi'] = get_t_pval(chr_res_df.loc[m, 'pval_gi'], idof, log=logp)
+                    # substitute column headers with interaction variable name
+                    v = interaction_df.columns[0]
+                    chr_res_df.rename(columns={
+                        'pval_i': f'pval_{v}', 'b_i': f'b_{v}', 'b_i_se': f'b_{v}_se',
+                        'pval_gi': f'pval_g_x_{v}', 'b_gi': f'b_g_x_{v}', 'b_gi_se': f'b_g_x_{v}_se',
+                    }, inplace=True)
                 else:
                     m = chr_res_df['pval_gi1'].notnull()
                     m = m[m].index
@@ -550,7 +556,13 @@ def map_nominal(genotype_df, variant_df, phenotype_df, phenotype_pos_df, prefix,
             else:
                 best_assoc['pval_emt'] = np.minimum(best_assoc['num_phenotypes']*best_assoc['tests_emt']*best_assoc['pval_gi'], 1)
             best_assoc['pval_adj_bh'] = eigenmt.padjust_bh(best_assoc['pval_emt'])
-        if ni > 1:  # substitute column headers
+        if ni == 1:  # substitute column headers with interaction variable name
+            v = interaction_df.columns[0]
+            best_assoc.rename(columns={
+                'pval_i': f'pval_{v}', 'b_i': f'b_{v}', 'b_i_se': f'b_{v}_se',
+                'pval_gi': f'pval_g_x_{v}', 'b_gi': f'b_g_x_{v}', 'b_gi_se': f'b_g_x_{v}_se',
+            }, inplace=True)
+        elif ni > 1:  # substitute column headers
             best_assoc.rename(columns=var_dict, inplace=True)
         if write_top:
             best_assoc.to_csv(os.path.join(output_dir, f'{prefix}.cis_qtl_top_assoc.txt.gz'),

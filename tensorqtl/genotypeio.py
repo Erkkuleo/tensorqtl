@@ -8,7 +8,10 @@ import sys
 import threading
 import queue
 import bisect
-from pandas_plink import read_plink
+try:
+    from pandas_plink import read_plink
+except ImportError:
+    read_plink = None  # type: ignore[assignment]
 
 sys.path.insert(1, os.path.dirname(__file__))
 from core import *
@@ -151,6 +154,11 @@ class PlinkReader(object):
           Uses read_plink from pandas_plink.
         """
 
+        if read_plink is None:
+            raise ImportError(
+                "pandas_plink is required to read PLINK1 bed/bim/fam files. "
+                "Install it with: pip install pandas-plink"
+            )
         self.bim, self.fam, self.bed = read_plink(plink_prefix_path, verbose=verbose)
         self.bed = 2 - self.bed  # flip allele order: PLINK uses REF as effect allele
         if dtype == np.int8:
