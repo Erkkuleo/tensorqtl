@@ -131,10 +131,11 @@ def test_append_cosinor_raises_if_sin_t_already_present():
 
 def test_make_interaction_df_shape_and_name():
     cos_t = pd.Series({"S1": 0.866, "S2": 0.5})
-    result = make_interaction_df(cos_t)
+    sin_t = pd.Series({"S1": 0.5, "S2": 0.866})
+    result = make_interaction_df(cos_t, sin_t)
     assert isinstance(result, pd.DataFrame)
-    assert result.shape == (2, 1)
-    assert result.columns[0] == "cos_t"
+    assert result.shape == (2, 2)
+    assert list(result.columns) == ["cos_t", "sin_t"]
     assert list(result.index) == ["S1", "S2"]
 
 
@@ -184,7 +185,7 @@ def test_main_cli_end_to_end(tmp_path):
     assert abs(out_cov_df.loc["cos_t", "S3"] - (-1.0)) < 1e-6  # cos(π) = -1
 
     out_int_df = pd.read_csv(str(out_int), sep="\t", index_col=0)
-    assert list(out_int_df.columns) == ["cos_t"]
+    assert list(out_int_df.columns) == ["cos_t", "sin_t"]
     assert list(out_int_df.index) == ["S1", "S2", "S3"]
 
 
