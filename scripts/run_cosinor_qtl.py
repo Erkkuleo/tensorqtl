@@ -178,21 +178,38 @@ def run_cosinor_mapping(
     )
 
 
+def _acat(p1: "pd.Series", p2: "pd.Series") -> "pd.Series":
+    """Aggregated Cauchy Association Test for two correlated p-values.
+
+    Valid even when p1 and p2 are correlated (unlike chi-squared sum of
+    t-statistics, which assumes independence). Under the null, the ACAT
+    statistic follows a standard Cauchy distribution regardless of the
+    correlation between the input tests.
+
+    Reference: Liu & Xie (2020) ACAT: A Fast and Powerful p-value
+    Combination Method for Rare-Variant Analysis. Am J Hum Genet.
+    """
+    import numpy as np
+    from scipy import stats as scipy_stats
+    p1 = p1.clip(lower=1e-300, upper=1 - 1e-15)
+    p2 = p2.clip(lower=1e-300, upper=1 - 1e-15)
+    T = 0.5 * (np.tan((0.5 - p1) * np.pi) + np.tan((0.5 - p2) * np.pi))
+    return pd.Series(0.5 - np.arctan(T.values) / np.pi, index=p1.index)
+
+
 def compute_2df_pvalues(output_dir: str, prefix: str) -> None:
-    """Add a joint 2-DF cosinor p-value column to each output parquet.
+    """Add a joint cosinor p-value column to each output parquet.
 
-    Combines the SNP×cos_t and SNP×sin_t t-statistics into a single
-    chi-squared statistic with 2 degrees of freedom:
+    Uses the ACAT (Aggregated Cauchy Association Test) to combine
+    pval_g_x_cos_t and pval_g_x_sin_t. Unlike the naive chi-squared sum of
+    t-statistics, ACAT is valid when the two tests are correlated — which
+    they are here, because the β_cos_t and β_sin_t estimators share the
+    same genotype column and are estimated jointly.
 
-        chi2 = t_cos² + t_sin²   (valid when cos_t and sin_t are uncorrelated)
-        pval_g_x_cosinor_2df = P(Chi2(2) > chi2)
-
-    This tests H0: β_cos_t = β_sin_t = 0 simultaneously and is sensitive
-    to circadian interactions at any phase, not just the cosine phase.
+    The resulting pval_g_x_cosinor_2df tests whether the SNP effect varies
+    with time at any circadian phase (not just the cosine phase).
     Overwrites each parquet in-place with the new column appended.
     """
-    from scipy import stats as scipy_stats
-
     parquets = sorted([
         f for f in os.listdir(output_dir)
         if f.startswith(prefix) and f.endswith(".parquet")
@@ -204,12 +221,11 @@ def compute_2df_pvalues(output_dir: str, prefix: str) -> None:
     for fname in parquets:
         path = os.path.join(output_dir, fname)
         df = pd.read_parquet(path)
-        t_cos = df["b_g_x_cos_t"] / df["b_g_x_cos_t_se"]
-        t_sin = df["b_g_x_sin_t"] / df["b_g_x_sin_t_se"]
-        chi2 = t_cos**2 + t_sin**2
-        df["pval_g_x_cosinor_2df"] = scipy_stats.chi2.sf(chi2.values, df=2)
+        df["pval_g_x_cosinor_2df"] = _acat(
+            df["pval_g_x_cos_t"], df["pval_g_x_sin_t"]
+        )
         df.to_parquet(path)
-        print(f"  Added pval_g_x_cosinor_2df to {fname}")
+        print(f"  Added pval_g_x_cosinor_2df (ACAT) to {fname}")
 
 
 def main() -> None:
