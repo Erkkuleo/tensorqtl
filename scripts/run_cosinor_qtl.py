@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """tensorQTL runner for cosinor (circadian) cis-eQTL interaction mapping.
 
-Runs a 1-DF interaction test: does a SNP's effect on gene expression
-change with the cosine of time-of-day?
+Runs interaction tests for circadian eQTL mapping. Two modes:
+
+  Default (2-DF):  SNP*cos_t + SNP*sin_t interaction terms are both tested.
+                   Use --cosinor-2df to add a joint 2-DF p-value column.
 
 Model fitted per gene:
-    expression ~ SNP + cos_t + sin_t + SNP*cos_t + other_covariates
+    expression ~ SNP + cos_t + sin_t + SNP*cos_t + SNP*sin_t + other_covariates
 
 cos_t and sin_t enter as regular covariates (via --covariates from
 cosinor_preprocess.py). cos_t additionally enters as the interaction
@@ -186,7 +188,8 @@ def compute_2df_pvalues(output_dir: str, prefix: str) -> None:
         pval_g_x_cosinor_2df = P(Chi2(2) > chi2)
 
     This tests H0: β_cos_t = β_sin_t = 0 simultaneously and is sensitive
-    to circadian interactions at any phase. Overwrites each parquet in-place.
+    to circadian interactions at any phase, not just the cosine phase.
+    Overwrites each parquet in-place with the new column appended.
     """
     from scipy import stats as scipy_stats
 
