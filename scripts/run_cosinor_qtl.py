@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """tensorQTL runner for cosinor (circadian) cis-eQTL interaction mapping.
 
-Runs a 1-DF interaction test: does a SNP's effect on gene expression
-change with the cosine of time-of-day?
+Runs interaction tests for circadian eQTL mapping. Two modes:
+
+  Default (2-DF):  SNP*cos_t + SNP*sin_t interaction terms are both tested.
+                   Use --cosinor-2df to add a joint 2-DF p-value column.
 
 Model fitted per gene:
-    expression ~ SNP + cos_t + sin_t + SNP*cos_t + other_covariates
+    expression ~ SNP + cos_t + sin_t + SNP*cos_t + SNP*sin_t + other_covariates
 
 cos_t and sin_t enter as regular covariates (via --covariates from
 cosinor_preprocess.py). cos_t additionally enters as the interaction
@@ -176,12 +178,44 @@ def run_cosinor_mapping(
     )
 
 
+def compute_2df_pvalues(output_dir: str, prefix: str) -> None:
+    """Add a joint 2-DF cosinor p-value column to each output parquet.
+
+    Combines the SNP×cos_t and SNP×sin_t t-statistics into a single
+    chi-squared statistic with 2 degrees of freedom:
+
+        chi2 = t_cos² + t_sin²   (valid when cos_t and sin_t are uncorrelated)
+        pval_g_x_cosinor_2df = P(Chi2(2) > chi2)
+
+    This tests H0: β_cos_t = β_sin_t = 0 simultaneously and is sensitive
+    to circadian interactions at any phase, not just the cosine phase.
+    Overwrites each parquet in-place with the new column appended.
+    """
+    from scipy import stats as scipy_stats
+
+    parquets = sorted([
+        f for f in os.listdir(output_dir)
+        if f.startswith(prefix) and f.endswith(".parquet")
+    ])
+    if not parquets:
+        raise FileNotFoundError(f"No parquet files found in {output_dir} with prefix '{prefix}'")
+
+    for fname in parquets:
+        path = os.path.join(output_dir, fname)
+        df = pd.read_parquet(path)
+        t_cos = df["b_g_x_cos_t"] / df["b_g_x_cos_t_se"]
+        t_sin = df["b_g_x_sin_t"] / df["b_g_x_sin_t_se"]
+        chi2 = t_cos**2 + t_sin**2
+        df["pval_g_x_cosinor_2df"] = scipy_stats.chi2.sf(chi2.values, df=2)
+        df.to_parquet(path)
+        print(f"  Added pval_g_x_cosinor_2df to {fname}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Run cosinor cis-eQTL interaction mapping using tensorQTL. "
-            "Tests whether each SNP's effect on expression varies with the "
-            "cosine of time-of-day (1-DF interaction test). "
+            "Tests whether each SNP's effect on expression varies with time of day. "
             "Run cosinor_preprocess.py first to generate the required "
             "--covariates and --interaction files."
         )
@@ -193,13 +227,17 @@ def main() -> None:
     parser.add_argument("--covariates", required=True,
                         help="Covariates file output by cosinor_preprocess.py.")
     parser.add_argument("--interaction", required=True,
-                        help="Interaction file output by cosinor_preprocess.py (cos_t column).")
+                        help="Interaction file output by cosinor_preprocess.py (cos_t + sin_t columns).")
     parser.add_argument("--output-dir", required=True,
                         help="Directory to write result parquet files.")
     parser.add_argument("--prefix", required=True,
                         help="Output filename prefix (e.g. 'my_study.cosinor').")
     parser.add_argument("--window", type=int, default=1_000_000,
                         help="cis window size in bp (default: 1000000).")
+    parser.add_argument("--cosinor-2df", action="store_true",
+                        help="After mapping, compute a joint 2-DF cosinor p-value "
+                             "(pval_g_x_cosinor_2df) combining SNP×cos_t and SNP×sin_t. "
+                             "Requires the interaction file to have both cos_t and sin_t columns.")
     args = parser.parse_args()
 
     (genotype_df, variant_df, phenotype_df, phenotype_pos_df,
@@ -207,10 +245,19 @@ def main() -> None:
         args.plink_prefix, args.phenotypes, args.covariates, args.interaction
     )
 
+    if args.cosinor_2df:
+        missing = [c for c in ("cos_t", "sin_t") if c not in interaction_df.columns]
+        if missing:
+            raise ValueError(
+                f"--cosinor-2df requires both 'cos_t' and 'sin_t' columns in the "
+                f"interaction file, but missing: {missing}"
+            )
+
     validate_sample_alignment(phenotype_df, covariates_df, interaction_df)
 
+    mode = "2-DF (SNP × cos_t + SNP × sin_t)" if args.cosinor_2df else "per interaction term"
     print(
-        f"Running cosinor cis-QTL mapping (1-DF interaction: SNP x cos_t)\n"
+        f"Running cosinor cis-QTL mapping [{mode}]\n"
         f"  phenotypes:        {phenotype_df.shape[0]}\n"
         f"  samples:           {phenotype_df.shape[1]}\n"
         f"  variants:          {variant_df.shape[0]}\n"
@@ -225,9 +272,12 @@ def main() -> None:
         output_dir=args.output_dir,
         window=args.window,
     )
-    print(
-        f"Done. Results: {args.output_dir}/{args.prefix}.cis_qtl_pairs.*.parquet"
-    )
+
+    if args.cosinor_2df:
+        print("Computing joint 2-DF cosinor p-values...")
+        compute_2df_pvalues(args.output_dir, args.prefix)
+
+    print(f"Done. Results: {args.output_dir}/{args.prefix}.cis_qtl_pairs.*.parquet")
 
 
 if __name__ == "__main__":
