@@ -61,7 +61,24 @@ def test_compute_cosinor_custom_period():
 from cosinor_preprocess import (
     load_metadata, load_covariates,
     append_cosinor_to_covariates, make_interaction_df,
+    parse_time_to_day_of_year,
 )
+
+
+def test_parse_time_to_day_of_year_numeric():
+    assert parse_time_to_day_of_year("180.5") == pytest.approx(180.5)
+
+
+def test_parse_time_to_day_of_year_iso():
+    # 2024-01-01 is day 1
+    assert parse_time_to_day_of_year("2024-01-01T00:00:00") == pytest.approx(1.0)
+    # 2024-07-01 is day 183 (2024 is a leap year)
+    assert parse_time_to_day_of_year("2024-07-01T12:00:00") == pytest.approx(183.0)
+
+
+def test_parse_time_to_day_of_year_invalid():
+    with pytest.raises(ValueError):
+        parse_time_to_day_of_year("not_a_date")
 
 
 def test_load_metadata_basic(tmp_path):
@@ -71,6 +88,14 @@ def test_load_metadata_basic(tmp_path):
     assert len(result) == 2
     assert result["S1"] == pytest.approx(8.0)
     assert result["S2"] == pytest.approx(20.5)
+
+
+def test_load_metadata_toy_mode(tmp_path):
+    f = tmp_path / "meta.tsv"
+    f.write_text("sample_id\tday\nS1\t1.0\nS2\t180.0\n")
+    result = load_metadata(str(f), time_col="day", mode="toy")
+    assert result["S1"] == pytest.approx(1.0)
+    assert result["S2"] == pytest.approx(180.0)
 
 
 def test_load_metadata_missing_column_raises(tmp_path):

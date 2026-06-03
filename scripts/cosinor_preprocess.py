@@ -8,7 +8,7 @@ import sys
 
 
 def parse_time_to_hours(value: str) -> float:
-    """Convert a time value string to fractional hours (0-24).
+    """Convert a time value to fractional hours (0-24) for tod mode.
 
     Accepts either a numeric hour (e.g. "14.5") or an ISO 8601 timestamp
     (e.g. "2024-01-15T14:30:00"). ISO is tried first; if it fails, the
@@ -30,6 +30,29 @@ def parse_time_to_hours(value: str) -> float:
         )
 
 
+def parse_time_to_day_of_year(value: str) -> float:
+    """Convert a time value to fractional day-of-year (1-366) for toy mode.
+
+    Accepts either a numeric day (e.g. "180.5") or an ISO 8601 timestamp
+    (e.g. "2024-07-01T10:00:00"). ISO is tried first; if it fails, the
+    value is parsed as a plain float.
+    """
+    from datetime import datetime
+    try:
+        dt = datetime.fromisoformat(value)
+        return float(dt.timetuple().tm_yday)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        raise ValueError(
+            f"Cannot convert '{value}' to day of year. "
+            "Expected a numeric value (e.g. '180.5') or ISO 8601 timestamp "
+            "(e.g. '2024-07-01T10:00:00')."
+        )
+
+
 def compute_cosinor(hours: pd.Series, period: float = 24.0) -> tuple:
     """Compute cosine and sine time encodings for circadian eQTL mapping.
 
@@ -46,22 +69,24 @@ def compute_cosinor(hours: pd.Series, period: float = 24.0) -> tuple:
     return cos_t, sin_t
 
 
-def load_metadata(path: str, time_col: str) -> pd.Series:
-    """Load sample metadata and return hour-of-day values.
+def load_metadata(path: str, time_col: str, mode: str = "tod") -> pd.Series:
+    """Load sample metadata and return time values for cosinor encoding.
 
     File must be tab-separated with a header; the first column is used as
     sample IDs.
 
     Args:
         path: Path to TSV metadata file.
-        time_col: Column name containing time-of-day values.
+        time_col: Column name containing time values.
+        mode: 'tod' (time of day, values in hours 0-24) or
+              'toy' (time of year, values in day-of-year 1-366).
 
     Returns:
-        Series of float hours indexed by sample ID.
+        Series of float time values indexed by sample ID.
 
     Raises:
         ValueError: If time_col is absent, sample IDs are duplicated,
-                    or any time value cannot be converted to float.
+                    or any time value cannot be parsed.
     """
     df = pd.read_csv(path, sep="\t", index_col=0)
     if time_col not in df.columns:
@@ -72,7 +97,8 @@ def load_metadata(path: str, time_col: str) -> pd.Series:
     if df.index.duplicated().any():
         dupes = df.index[df.index.duplicated()].tolist()
         raise ValueError(f"Duplicate sample IDs in metadata: {dupes}")
-    return df[time_col].map(lambda v: parse_time_to_hours(str(v)))
+    parse_fn = parse_time_to_hours if mode == "tod" else parse_time_to_day_of_year
+    return df[time_col].map(lambda v: parse_fn(str(v)))
 
 
 def load_covariates(path: str) -> pd.DataFrame:
@@ -155,13 +181,26 @@ def main() -> None:
     parser.add_argument("--out-interaction", required=True,
                         help="Output path for interaction file (samples x 1 column: cos_t).")
     parser.add_argument("--time-col", default="hour",
-                        help="Column name for time-of-day in metadata (default: 'hour').")
-    parser.add_argument("--period", type=float, default=24.0,
-                        help="Cycle period in hours (default: 24.0 for circadian).")
+                        help="Column name for time values in metadata (default: 'hour').")
+    parser.add_argument("--mode", choices=["tod", "toy"], default="tod",
+                        help=(
+                            "tod = time of day: encodes 24-hour circadian rhythm, "
+                            "expects hours (0-24) or ISO 8601 timestamps. "
+                            "toy = time of year: encodes seasonal rhythm, "
+                            "expects day-of-year (1-366) or ISO 8601 timestamps. "
+                            "Sets the default --period (24.0 for tod, 365.25 for toy)."
+                        ))
+    parser.add_argument("--period", type=float, default=None,
+                        help="Cycle period (default: 24.0 for tod, 365.25 for toy). "
+                             "Override with this flag if needed.")
     args = parser.parse_args()
 
+    if args.period is None:
+        args.period = 24.0 if args.mode == "tod" else 365.25
+
+    print(f"Mode: {args.mode}  |  Period: {args.period}")
     print(f"Loading metadata from {args.metadata}")
-    hours = load_metadata(args.metadata, time_col=args.time_col)
+    hours = load_metadata(args.metadata, time_col=args.time_col, mode=args.mode)
 
     print(f"Loading covariates from {args.covariates}")
     covariates_df = load_covariates(args.covariates)
