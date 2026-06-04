@@ -155,9 +155,15 @@ def step_download(dirs):
     coord_df["_r"] = coord_df["#chr"].map(lambda c: chrom_rank.get(c, 99))
     coord_df = coord_df.sort_values(["_r", "start", "end"]).drop(columns=["_r"])
 
-    bed = coord_df.set_index("gene_id")
-    bed = bed.join(normed, how="inner").reset_index()
-    bed = bed[["#chr", "start", "end", "gene_id"] + list(normed.columns)]
+    # Explicit join to avoid index name loss
+    coord_idx = coord_df.set_index("gene_id")
+    shared    = coord_idx.index.intersection(normed.index)
+    bed       = pd.concat([coord_idx.loc[shared],
+                           normed.reindex(shared)], axis=1)
+    bed.index.name = "gene_id"
+    bed = bed.reset_index()
+    sample_cols = [c for c in normed.columns if c in bed.columns]
+    bed = bed[["#chr", "start", "end", "gene_id"] + sample_cols]
     bed.to_csv(dirs["data"] / "expression.bed.gz", sep="\t", index=False,
                compression="gzip")
     print(f"  BED written ({len(bed)} genes)")
