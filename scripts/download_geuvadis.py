@@ -164,7 +164,7 @@ def build_bed(normed: pd.DataFrame, gtf_path: str, out_path: str) -> None:
     chrom_rank = {str(i): i for i in range(1, 23)}
     chrom_rank.update({"X": 23, "Y": 24, "MT": 25})
     bed["_rank"] = bed["#chr"].map(lambda c: chrom_rank.get(c, 99))
-    bed = bed.sort_values(["_rank", "start"]).drop(columns=["_rank"])
+    bed = bed.sort_values(["_rank", "start", "end"]).drop(columns=["_rank"])
     bed = bed.reset_index(drop=True)
 
     bed.to_csv(out_path, sep="\t", index=False, compression="gzip")
