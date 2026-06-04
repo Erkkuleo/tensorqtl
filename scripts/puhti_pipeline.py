@@ -183,10 +183,16 @@ def step_download(dirs):
 # ════════════════════════════════════════════════════════════════════════════
 
 CHIRAL_R = r"""
+# Add personal R library (pre-installed on login node) to search path
+personal_lib <- file.path(Sys.getenv("HOME"), "R", "library")
+if (dir.exists(personal_lib)) .libPaths(c(personal_lib, .libPaths()))
+
 if (!requireNamespace("CHIRAL", quietly=TRUE)) {
   if (!requireNamespace("remotes", quietly=TRUE))
-    install.packages("remotes", repos="http://cran.us.r-project.org", quiet=TRUE)
-  remotes::install_github("naef-lab/CHIRAL/Pkg/CHIRAL", quiet=TRUE)
+    install.packages("remotes", repos="https://cloud.r-project.org",
+                     lib=personal_lib, quiet=TRUE)
+  remotes::install_github("naef-lab/CHIRAL/Pkg/CHIRAL",
+                           lib=personal_lib, quiet=TRUE)
 }
 library(CHIRAL)
 args       <- commandArgs(trailingOnly=TRUE)
