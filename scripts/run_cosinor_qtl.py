@@ -105,9 +105,22 @@ def load_inputs(
     print(f"Loading phenotypes from {phenotypes_path}")
     phenotype_df, phenotype_pos_df = read_phenotype_bed(phenotypes_path)
 
+    # Read genotype sample list from psam to find intersection with phenotype samples
+    psam_path = plink_prefix + ".psam"
+    if os.path.exists(psam_path):
+        psam = pd.read_csv(psam_path, sep="\t", usecols=[0])
+        geno_samples = set(psam.iloc[:, 0].astype(str))
+        shared = [s for s in phenotype_df.columns if s in geno_samples]
+        if len(shared) < len(phenotype_df.columns):
+            print(f"  * {len(phenotype_df.columns) - len(shared)} phenotype samples "
+                  f"not in genotype file — using {len(shared)} overlapping samples")
+        phenotype_df = phenotype_df[shared]
+    else:
+        shared = list(phenotype_df.columns)
+
     print(f"Loading genotypes from {plink_prefix}")
     genotype_df, variant_df = genotypeio.load_genotypes(
-        plink_prefix, select_samples=phenotype_df.columns
+        plink_prefix, select_samples=shared
     )
 
     print(f"Loading covariates from {covariates_path}")
