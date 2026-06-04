@@ -123,9 +123,16 @@ result <- CHIRAL(
 phi   <- result$phi
 hours <- phi * 24 / (2 * pi)
 
+# result$phi may be unnamed — use colnames(E) as sample IDs
+sample_ids <- if (!is.null(names(phi)) && length(names(phi)) == length(phi)) {
+  names(phi)
+} else {
+  colnames(E)
+}
+
 # Write output TSV
 out_df <- data.frame(
-  sample_id     = names(phi),
+  sample_id     = sample_ids,
   hour          = round(hours, 4),
   phase_radians = round(phi, 6),
   row.names     = NULL
