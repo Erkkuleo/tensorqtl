@@ -266,12 +266,18 @@ def step_chiral(dirs, n_iter=500, n_top=3000):
         Rscript {tmp_r} {tmp_expr} {out_phases} {n_iter}
     """))
 
-    result = subprocess.run(["sbatch", "--wait", str(slurm_script)],
-                            capture_output=True, text=True)
-    print(result.stdout.strip())
-    if result.returncode != 0:
-        print("STDERR:", result.stderr)
-        raise RuntimeError("CHIRAL SLURM job failed")
+    if out_phases.exists():
+        print(f"  Phases already exist: {out_phases}")
+        return
+
+    print(f"\n  CHIRAL data prepared. pytorch and r-env are in separate containers")
+    print(f"  and cannot call each other. Submit the job from the LOGIN NODE:\n")
+    print(f"    sbatch {slurm_script}\n")
+    print(f"  Monitor with:  squeue -u $USER")
+    print(f"  When done, re-run this step to continue:")
+    print(f"    python3 scripts/puhti_pipeline.py --project project_2013539 --step chiral")
+    print(f"\n  Output will be written to: {out_phases}")
+    sys.exit(0)
 
     phases = pd.read_csv(out_phases, sep="\t")
     print(f"  Samples: {len(phases)}")
