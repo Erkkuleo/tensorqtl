@@ -586,8 +586,10 @@ def main():
                              "(default: all 22). Example: --chroms 12,17")
     parser.add_argument("--no-slurm", action="store_true",
                         help="Run mapping locally instead of submitting SLURM jobs.")
-    parser.add_argument("--n-iter", type=int, default=500,
-                        help="CHIRAL EM iterations (default: 500).")
+    parser.add_argument("--n-iter", type=int, default=200,
+                        help="CHIRAL EM iterations (default: 200).")
+    parser.add_argument("--n-top-genes", type=int, default=500,
+                        help="Top variable genes for CHIRAL (default: 500, fewer = less memory).")
     args = parser.parse_args()
 
     if not args.step and not args.all:
@@ -605,7 +607,7 @@ def main():
         if step == "download":
             step_download(dirs)
         elif step == "chiral":
-            step_chiral(dirs, n_iter=args.n_iter)
+            step_chiral(dirs, n_iter=args.n_iter, n_top=args.n_top_genes)
         elif step == "preprocess":
             step_preprocess(dirs)
         elif step == "map":
