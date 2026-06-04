@@ -159,6 +159,14 @@ def build_bed(normed: pd.DataFrame, gtf_path: str, out_path: str) -> None:
     bed = bed.reset_index()
     bed = bed[["#chr", "start", "end", "gene_id"] + list(normed.columns)]
 
+    # Sort within each chromosome by start position (required by tensorQTL).
+    # Use natural chromosome order so chr1 < chr2 < ... < chr22 < chrX < chrY.
+    chrom_rank = {str(i): i for i in range(1, 23)}
+    chrom_rank.update({"X": 23, "Y": 24, "MT": 25})
+    bed["_rank"] = bed["#chr"].map(lambda c: chrom_rank.get(c, 99))
+    bed = bed.sort_values(["_rank", "start"]).drop(columns=["_rank"])
+    bed = bed.reset_index(drop=True)
+
     bed.to_csv(out_path, sep="\t", index=False, compression="gzip")
     print(f"  Wrote BED: {out_path} ({len(bed)} genes)")
 
