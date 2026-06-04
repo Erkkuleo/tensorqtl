@@ -131,10 +131,10 @@ def load_inputs(
         _sample_ids = _f.readline().rstrip("\n").split("\t")[1:]
     _cov = pd.read_csv(covariates_path, sep="\t", skiprows=1, header=None, index_col=0)
     _cov.columns = _sample_ids
-    covariates_df = _cov.T
+    covariates_df = _cov.T.reindex(shared)  # subset to overlapping samples
 
     print(f"Loading interaction terms from {interaction_path}")
-    interaction_df = pd.read_csv(interaction_path, sep="\t", index_col=0)
+    interaction_df = pd.read_csv(interaction_path, sep="\t", index_col=0).reindex(shared)
 
     return genotype_df, variant_df, phenotype_df, phenotype_pos_df, covariates_df, interaction_df
 
