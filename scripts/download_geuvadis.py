@@ -101,11 +101,19 @@ def normalize_expression(rpkm: pd.DataFrame, min_samples_expressed: float = 0.1)
     rpkm = rpkm.loc[expressed]
     print(f"  Kept {rpkm.shape[0]} genes expressed in ≥{min_samples_expressed*100:.0f}% of samples")
 
+    # Clip negative values before log transform (some processed RPKM files have small negatives)
+    rpkm = rpkm.clip(lower=0)
     log_rpkm = np.log2(rpkm + 1)
+
+    # Drop any genes/samples that still have NaN or inf after log transform
+    log_rpkm = log_rpkm.replace([np.inf, -np.inf], np.nan)
+    log_rpkm = log_rpkm.dropna(how="any")
+    print(f"  {log_rpkm.shape[0]} genes after NaN/inf filter")
+
     normed = log_rpkm.apply(lambda row: inverse_normal_transform(row.values), axis=1,
                             result_type="expand")
-    normed.columns = rpkm.columns
-    normed.index = rpkm.index
+    normed.columns = log_rpkm.columns
+    normed.index = log_rpkm.index
     return normed
 
 
