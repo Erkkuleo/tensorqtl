@@ -148,6 +148,8 @@ def build_bed(normed: pd.DataFrame, gtf_path: str, out_path: str) -> None:
         if base_id in coords:
             chrom, start, end = coords[base_id]
             if not chrom.startswith("CHR") and "_" not in chrom:
+                # Add chr prefix to match UCSC/PLINK format (Ensembl uses bare numbers)
+                chrom = chrom if chrom.startswith("chr") else f"chr{chrom}"
                 rows.append((chrom, start, end, gene))
 
     coord_df = pd.DataFrame(rows, columns=["#chr", "start", "end", "gene_id"])
