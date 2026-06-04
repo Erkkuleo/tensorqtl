@@ -276,8 +276,8 @@ SLURM_TEMPLATE = """\
 #SBATCH --output={log_dir}/chr{chrom}_%j.out
 #SBATCH --error={log_dir}/chr{chrom}_%j.err
 
-module load tykky
-export PATH=/projappl/{project}/cosinor-env/bin:$PATH
+module load pytorch   # includes python3.12, torch+CUDA, pandas, scipy, sklearn
+export PATH=/users/$USER/.local/bin:/scratch/{project}/Erkka/tensorqtl:$PATH
 
 cd {workdir}
 
@@ -299,7 +299,7 @@ if [ ! -f "${{PGEN}}.pgen" ]; then
 fi
 
 # Run cosinor eQTL mapping
-python scripts/run_cosinor_qtl.py \\
+python3 scripts/run_cosinor_qtl.py \\
   --plink-prefix "$PGEN" \\
   --phenotypes   {data_dir}/expression.bed.gz \\
   --covariates   {data_dir}/covariates_cosinor.txt \\
