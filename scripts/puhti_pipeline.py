@@ -244,15 +244,16 @@ def step_chiral(dirs, n_iter=500, n_top=3000):
 
     out_phases = dirs["data"] / "chiral_phases.tsv"
 
-    # Resolve full Rscript path via bash (module load only sets PATH in bash)
-    r = subprocess.run(["bash", "-c", "which Rscript"],
-                       capture_output=True, text=True)
-    rscript = r.stdout.strip() or "/appl/soft/math/r-env/452/Rscript"
-    if not os.path.exists(rscript):
-        raise RuntimeError(
-            f"Rscript not found at {rscript}. Run: module load r-env"
-        )
-    run([rscript, str(tmp_r), str(tmp_expr), str(out_phases), str(n_iter)])
+    # Wrap in a bash script that loads r-env so apptainer_wrapper is available
+    # (r-env on Puhti uses Apptainer containers and needs the full module env)
+    bash_script = dirs["tmp"] / "run_chiral.sh"
+    bash_script.write_text(textwrap.dedent(f"""\
+        #!/bin/bash
+        module load r-env 2>/dev/null || true
+        Rscript {tmp_r} {tmp_expr} {out_phases} {n_iter}
+    """))
+    bash_script.chmod(0o755)
+    run(["bash", str(bash_script)])
 
     phases = pd.read_csv(out_phases, sep="\t")
     print(f"  Samples: {len(phases)}")
