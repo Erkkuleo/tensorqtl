@@ -257,13 +257,16 @@ def step_chiral(dirs, n_iter=500, n_top=3000):
         #SBATCH --partition=small
         #SBATCH --time=01:00:00
         #SBATCH --mem=64G
+        #SBATCH --nodes=1
+        #SBATCH --ntasks=1
         #SBATCH --cpus-per-task=4
         #SBATCH --output={dirs['logs']}/chiral_%j.out
         #SBATCH --error={dirs['logs']}/chiral_%j.err
 
         module load r-env
 
-        Rscript {tmp_r} {tmp_expr} {out_phases} {n_iter}
+        # srun is required on Puhti for r-env Apptainer containers in batch jobs
+        srun Rscript {tmp_r} {tmp_expr} {out_phases} {n_iter}
     """))
 
     if out_phases.exists():
