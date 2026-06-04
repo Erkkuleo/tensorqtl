@@ -283,6 +283,7 @@ SLURM_TEMPLATE = """\
 #SBATCH --error={log_dir}/chr{chrom}_%j.err
 
 module load pytorch   # includes python3.12, torch+CUDA, pandas, scipy, sklearn
+module load r-env     # R for CHIRAL (only needed if running CHIRAL in the job)
 export PATH=/users/$USER/.local/bin:/scratch/{project}/Erkka/tensorqtl:$PATH
 
 cd {workdir}
