@@ -49,10 +49,10 @@ import pandas as pd
 CHIRAL_R_SCRIPT = r"""
 # Install CHIRAL from GitHub if not already installed
 if (!requireNamespace("CHIRAL", quietly = TRUE)) {
-  if (!requireNamespace("devtools", quietly = TRUE)) {
-    install.packages("devtools", repos = "http://cran.us.r-project.org", quiet = TRUE)
+  if (!requireNamespace("remotes", quietly = TRUE)) {
+    install.packages("remotes", repos = "http://cran.us.r-project.org", quiet = TRUE)
   }
-  devtools::install_github("naef-lab/CHIRAL/Pkg/CHIRAL", quiet = TRUE)
+  remotes::install_github("naef-lab/CHIRAL/Pkg/CHIRAL", quiet = TRUE)
 }
 
 library(CHIRAL)
