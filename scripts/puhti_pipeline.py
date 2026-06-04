@@ -243,7 +243,11 @@ def step_chiral(dirs, n_iter=500, n_top=3000):
     tmp_r.write_text(CHIRAL_R)
 
     out_phases = dirs["data"] / "chiral_phases.tsv"
-    run(["Rscript", str(tmp_r), str(tmp_expr), str(out_phases), str(n_iter)])
+
+    # Resolve Rscript path — subprocess may not inherit module PATH
+    import shutil
+    rscript = shutil.which("Rscript") or "Rscript"
+    run([rscript, str(tmp_r), str(tmp_expr), str(out_phases), str(n_iter)])
 
     phases = pd.read_csv(out_phases, sep="\t")
     print(f"  Samples: {len(phases)}")
