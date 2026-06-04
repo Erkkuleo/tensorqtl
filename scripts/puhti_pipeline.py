@@ -248,12 +248,14 @@ def step_chiral(dirs, n_iter=500, n_top=3000):
     # (r-env on Puhti uses Apptainer containers and needs the full module env)
     bash_script = dirs["tmp"] / "run_chiral.sh"
     bash_script.write_text(textwrap.dedent(f"""\
-        #!/bin/bash
+        #!/bin/bash -l
+        # -l = login shell: sources /etc/profile and ~/.bash_profile so
+        # that 'module' command and Lmod are available
         module load r-env 2>/dev/null || true
         Rscript {tmp_r} {tmp_expr} {out_phases} {n_iter}
     """))
     bash_script.chmod(0o755)
-    run(["bash", str(bash_script)])
+    run(["bash", "-l", str(bash_script)])
 
     phases = pd.read_csv(out_phases, sep="\t")
     print(f"  Samples: {len(phases)}")
