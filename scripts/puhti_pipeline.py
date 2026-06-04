@@ -255,8 +255,8 @@ def step_chiral(dirs, n_iter=500, n_top=3000):
         #SBATCH --job-name=chiral_phase
         #SBATCH --account={os.environ.get('SLURM_JOB_ACCOUNT', 'project_2013539')}
         #SBATCH --partition=small
-        #SBATCH --time=00:30:00
-        #SBATCH --mem=16G
+        #SBATCH --time=01:00:00
+        #SBATCH --mem=64G
         #SBATCH --cpus-per-task=4
         #SBATCH --output={dirs['logs']}/chiral_%j.out
         #SBATCH --error={dirs['logs']}/chiral_%j.err
