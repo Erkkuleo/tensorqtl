@@ -69,13 +69,50 @@ E <- as.matrix(read.table(rpkm_path, sep = "\t", header = TRUE, row.names = 1,
 
 cat(sprintf("Expression matrix: %d genes x %d samples\n", nrow(E), ncol(E)))
 
+# Clip negative RPKM values before log transform
+E[E < 0] <- 0
+
 # Log2 transform RPKM (CHIRAL expects log-scale input)
 E <- log2(E + 1)
+
+# Remove any genes with NaN/Inf after log transform
+E <- E[apply(E, 1, function(x) all(is.finite(x))), ]
+cat(sprintf("After NaN filter: %d genes x %d samples\n", nrow(E), ncol(E)))
+
+# CHIRAL's default clock gene list uses HGNC symbols (e.g. ARNTL, CLOCK).
+# If our matrix uses Ensembl IDs, no clock genes will match and CHIRAL fails.
+# Detect which format we have and supply matching clock gene names.
+default_clock_hgnc <- c("ARNTL","CLOCK","CRY1","CRY2","PER1","PER2","PER3",
+                         "NR1D1","NR1D2","RORA","DBP","TEF","HLCF")
+# Ensembl IDs for the same genes (GRCh38)
+default_clock_ensg <- c("ENSG00000133794","ENSG00000049246","ENSG00000008405",
+                         "ENSG00000113163","ENSG00000179094","ENSG00000132326",
+                         "ENSG00000049246","ENSG00000069667","ENSG00000174738",
+                         "ENSG00000069667","ENSG00000105516","ENSG00000167601",
+                         "ENSG00000125743")
+
+n_hgnc_found <- sum(default_clock_hgnc %in% rownames(E))
+n_ensg_found <- sum(sapply(default_clock_ensg, function(g) any(startsWith(rownames(E), g))))
+
+if (n_hgnc_found >= 3) {
+  clockgenes <- default_clock_hgnc[default_clock_hgnc %in% rownames(E)]
+  cat(sprintf("Using %d HGNC clock genes for phase initialisation\n", length(clockgenes)))
+} else if (n_ensg_found >= 3) {
+  clockgenes <- rownames(E)[sapply(rownames(E), function(g)
+    any(startsWith(g, default_clock_ensg)))]
+  cat(sprintf("Using %d Ensembl clock genes for phase initialisation\n", length(clockgenes)))
+} else {
+  # No clock genes found — use all genes (CHIRAL will use correlation structure)
+  clockgenes <- rownames(E)
+  cat(sprintf("No known clock genes found — using all %d genes\n", length(clockgenes)))
+  cat("Note: phase estimates may be less reliable without known clock genes.\n")
+}
 
 cat(sprintf("Running CHIRAL (iterations = %d)...\n", n_iter))
 result <- CHIRAL(
   E             = E,
   iterations    = n_iter,
+  clockgenes    = clockgenes,
   GTEx_names    = gtex_names,
   mean.centre.E = TRUE,
   TSM           = TRUE,
