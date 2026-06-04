@@ -244,10 +244,14 @@ def step_chiral(dirs, n_iter=500, n_top=3000):
 
     out_phases = dirs["data"] / "chiral_phases.tsv"
 
-    # Resolve Rscript path — subprocess may not inherit module PATH
-    import shutil
-    rscript = shutil.which("Rscript") or "Rscript"
-    run([rscript, str(tmp_r), str(tmp_expr), str(out_phases), str(n_iter)])
+    # Use shell=True so Rscript is resolved from the current shell PATH
+    # (module load r-env may not propagate into subprocess env on Puhti)
+    import shlex
+    cmd = (f"Rscript {shlex.quote(str(tmp_r))} "
+           f"{shlex.quote(str(tmp_expr))} "
+           f"{shlex.quote(str(out_phases))} {n_iter}")
+    print(f"  $ {cmd}")
+    subprocess.run(cmd, check=True, shell=True)
 
     phases = pd.read_csv(out_phases, sep="\t")
     print(f"  Samples: {len(phases)}")
