@@ -21,8 +21,7 @@ set -euo pipefail
 export PATH="/projappl/project_2013539/cosinor-env/bin:/users/${USER}/.local/bin:${PATH}"
 
 # ── Config ────────────────────────────────────────────────────────────────────
-# Use submit directory when running via SLURM, otherwise derive from script location
-WORKDIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
+WORKDIR="/scratch/project_2013539/Erkka/tensorqtl"
 GENO_DIR="${WORKDIR}/pipeline_output/geno"
 SAMPLES="${WORKDIR}/pipeline_output/raw/samples_EUR.txt"
 THREADS=8
