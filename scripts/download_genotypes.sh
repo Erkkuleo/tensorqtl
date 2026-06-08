@@ -17,7 +17,8 @@
 set -euo pipefail
 
 # ── Config ────────────────────────────────────────────────────────────────────
-WORKDIR="$(cd "$(dirname "$0")/.." && pwd)"
+# Use submit directory when running via SLURM, otherwise derive from script location
+WORKDIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 GENO_DIR="${WORKDIR}/pipeline_output/geno"
 SAMPLES="${WORKDIR}/pipeline_output/raw/samples_EUR.txt"
 THREADS=8
