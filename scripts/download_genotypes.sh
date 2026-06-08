@@ -16,6 +16,10 @@
 
 set -euo pipefail
 
+# ── Environment ───────────────────────────────────────────────────────────────
+# Add plink2 location to PATH (adjust if plink2 is elsewhere on your system)
+export PATH="/projappl/project_2013539/cosinor-env/bin:/users/${USER}/.local/bin:${PATH}"
+
 # ── Config ────────────────────────────────────────────────────────────────────
 # Use submit directory when running via SLURM, otherwise derive from script location
 WORKDIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
