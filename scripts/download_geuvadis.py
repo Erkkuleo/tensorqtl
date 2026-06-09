@@ -75,8 +75,7 @@ def load_sample_metadata(path: str) -> pd.DataFrame:
 def get_eur_samples(rpkm: pd.DataFrame, metadata: pd.DataFrame) -> list:
     """Return EUR sample IDs present in both RPKM and metadata."""
     eur = metadata[metadata["population"].isin(
-        ["British", "Finnish", "Utah residents with Northern and Western European ancestry",
-         "Tuscan", "CEPH"]
+        ["British", "Finnish", "Utah", "Tuscan"]
     )].index
     return [s for s in rpkm.columns if s in eur]
 

@@ -100,9 +100,7 @@ def step_download(dirs):
     # Parse EUR samples
     sdrf = pd.read_csv(dirs["raw"] / "E-GEUV-1.sdrf.txt", sep="\t")
     sdrf = sdrf.drop_duplicates(subset=["Source Name"])
-    eur_pops = ["British", "Finnish",
-                "Utah residents with Northern and Western European ancestry",
-                "Tuscan", "CEPH"]
+    eur_pops = ["British", "Finnish", "Utah", "Tuscan"]
     eur = sdrf[sdrf["Characteristics[ancestry category]"].isin(eur_pops)]["Source Name"]
     eur.to_csv(dirs["raw"] / "samples_EUR.txt", index=False, header=False)
     print(f"  EUR samples: {len(eur)}")
