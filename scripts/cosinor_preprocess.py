@@ -119,38 +119,6 @@ def load_covariates(path: str) -> pd.DataFrame:
     return df
 
 
-def append_cosinor_to_covariates(
-    covariates_df: pd.DataFrame, cos_t: pd.Series, sin_t: pd.Series
-) -> pd.DataFrame:
-    """Append cos_t and sin_t rows to a tensorQTL covariates DataFrame.
-
-    Args:
-        covariates_df: Existing covariates (rows=covariate names, cols=samples).
-        cos_t: Cosine values indexed by sample ID (must cover all samples).
-        sin_t: Sine values indexed by sample ID (must cover all samples).
-
-    Returns:
-        New DataFrame with cos_t and sin_t appended as the last two rows.
-
-    Raises:
-        ValueError: If 'cos_t' or 'sin_t' are already present in the index.
-    """
-    for name in ("cos_t", "sin_t"):
-        if name in covariates_df.index:
-            raise ValueError(
-                f"'{name}' already present in covariates index. "
-                "Remove it before re-running cosinor_preprocess.py."
-            )
-    new_rows = pd.DataFrame(
-        [
-            cos_t.reindex(covariates_df.columns).values,
-            sin_t.reindex(covariates_df.columns).values,
-        ],
-        index=["cos_t", "sin_t"],
-        columns=covariates_df.columns,
-    )
-    return pd.concat([covariates_df, new_rows])
-
 
 def make_interaction_df(cos_t: pd.Series, sin_t: pd.Series) -> pd.DataFrame:
     """Create a tensorQTL interaction DataFrame with cos_t and sin_t terms.
@@ -219,9 +187,8 @@ def main() -> None:
     hours_aligned = hours.loc[covariate_samples]
     cos_t, sin_t = compute_cosinor(hours_aligned, period=args.period)
 
-    updated_cov = append_cosinor_to_covariates(covariates_df, cos_t, sin_t)
-    updated_cov.to_csv(args.out_covariates, sep="\t")
-    print(f"Wrote updated covariates ({updated_cov.shape[0]} rows) to {args.out_covariates}")
+    covariates_df.to_csv(args.out_covariates, sep="\t")
+    print(f"Wrote covariates ({covariates_df.shape[0]} rows) to {args.out_covariates}")
 
     interaction_df = make_interaction_df(cos_t, sin_t)
     interaction_df.to_csv(args.out_interaction, sep="\t")
