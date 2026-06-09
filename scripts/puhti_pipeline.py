@@ -102,7 +102,7 @@ def step_download(dirs):
     sdrf = sdrf.drop_duplicates(subset=["Source Name"])
     eur_pops = ["British", "Finnish",
                 "Utah residents with Northern and Western European ancestry",
-                "Toscani", "CEPH"]
+                "Tuscan", "CEPH"]
     eur = sdrf[sdrf["Characteristics[ancestry category]"].isin(eur_pops)]["Source Name"]
     eur.to_csv(dirs["raw"] / "samples_EUR.txt", index=False, header=False)
     print(f"  EUR samples: {len(eur)}")
