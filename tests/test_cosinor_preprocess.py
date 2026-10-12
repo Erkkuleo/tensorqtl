@@ -60,7 +60,7 @@ def test_compute_cosinor_custom_period():
 
 from cosinor_preprocess import (
     load_metadata, load_covariates,
-    append_cosinor_to_covariates, make_interaction_df,
+    make_interaction_df, check_no_overlap,
     parse_time_to_day_of_year,
 )
 
@@ -128,32 +128,6 @@ def test_load_covariates_basic(tmp_path):
     assert list(result.columns) == ["S1", "S2"]
 
 
-def test_append_cosinor_to_covariates_adds_rows():
-    cov = pd.DataFrame({"S1": [0.1], "S2": [0.2]}, index=["PC1"])
-    cos_t = pd.Series({"S1": 0.866, "S2": 0.5})
-    sin_t = pd.Series({"S1": 0.5, "S2": 0.866})
-    result = append_cosinor_to_covariates(cov, cos_t, sin_t)
-    assert list(result.index) == ["PC1", "cos_t", "sin_t"]
-    assert result.loc["cos_t", "S1"] == pytest.approx(0.866)
-    assert result.loc["sin_t", "S2"] == pytest.approx(0.866)
-
-
-def test_append_cosinor_raises_if_cos_t_already_present():
-    cov = pd.DataFrame({"S1": [0.1]}, index=["cos_t"])
-    cos_t = pd.Series({"S1": 0.866})
-    sin_t = pd.Series({"S1": 0.5})
-    with pytest.raises(ValueError, match="already present"):
-        append_cosinor_to_covariates(cov, cos_t, sin_t)
-
-
-def test_append_cosinor_raises_if_sin_t_already_present():
-    cov = pd.DataFrame({"S1": [0.1]}, index=["sin_t"])
-    cos_t = pd.Series({"S1": 0.866})
-    sin_t = pd.Series({"S1": 0.5})
-    with pytest.raises(ValueError, match="already present"):
-        append_cosinor_to_covariates(cov, cos_t, sin_t)
-
-
 def test_make_interaction_df_shape_and_name():
     cos_t = pd.Series({"S1": 0.866, "S2": 0.5})
     sin_t = pd.Series({"S1": 0.5, "S2": 0.866})
@@ -164,13 +138,40 @@ def test_make_interaction_df_shape_and_name():
     assert list(result.index) == ["S1", "S2"]
 
 
-def test_append_cosinor_does_not_mutate_input():
+def test_compute_cosinor_two_harmonics():
+    hours = pd.Series({"S1": 0.0, "S2": 3.0, "S3": 6.0})
+    terms = compute_cosinor(hours, period=24.0, harmonics=2)
+    assert [t.name for t in terms] == ["cos_t", "sin_t", "cos2_t", "sin2_t"]
+    cos2_t, sin2_t = terms[2], terms[3]
+    assert cos2_t["S1"] == pytest.approx(1.0)
+    assert sin2_t["S2"] == pytest.approx(1.0)                 # 12 h harmonic: 3 h -> pi/2
+    assert cos2_t["S3"] == pytest.approx(-1.0)                # 6 h -> pi
+    assert terms[0]["S3"] == pytest.approx(0.0, abs=1e-12)    # fundamental unchanged
+
+
+def test_compute_cosinor_invalid_harmonics():
+    with pytest.raises(ValueError):
+        compute_cosinor(pd.Series({"S1": 1.0}), harmonics=3)
+
+
+def test_make_interaction_df_four_columns():
+    hours = pd.Series({"S1": 0.0, "S2": 7.0})
+    result = make_interaction_df(*compute_cosinor(hours, harmonics=2))
+    assert list(result.columns) == ["cos_t", "sin_t", "cos2_t", "sin2_t"]
+    assert list(result.index) == ["S1", "S2"]
+
+
+def test_check_no_overlap_ok():
     cov = pd.DataFrame({"S1": [0.1]}, index=["PC1"])
-    cov_orig = cov.copy()
-    cos_t = pd.Series({"S1": 0.866})
-    sin_t = pd.Series({"S1": 0.5})
-    append_cosinor_to_covariates(cov, cos_t, sin_t)
-    pd.testing.assert_frame_equal(cov, cov_orig)
+    inter = pd.DataFrame({"cos_t": [1.0], "sin_t": [0.0]}, index=["S1"])
+    check_no_overlap(cov, inter)  # must not raise
+
+
+def test_check_no_overlap_raises():
+    cov = pd.DataFrame({"S1": [0.1, 0.5]}, index=["PC1", "sin_t"])
+    inter = pd.DataFrame({"cos_t": [1.0], "sin_t": [0.0]}, index=["S1"])
+    with pytest.raises(ValueError, match="sin_t"):
+        check_no_overlap(cov, inter)
 
 
 import subprocess
@@ -203,15 +204,16 @@ def test_main_cli_end_to_end(tmp_path):
     )
     assert result.returncode == 0, result.stderr
 
+    # cosinor terms are NOT added to the covariates (they enter as interaction main effects)
     out_cov_df = pd.read_csv(str(out_cov), sep="\t", index_col=0)
-    assert list(out_cov_df.index) == ["PC1", "cos_t", "sin_t"]
-    assert abs(out_cov_df.loc["cos_t", "S1"] - 1.0) < 1e-6    # cos(0) = 1
-    assert abs(out_cov_df.loc["cos_t", "S2"] - 0.0) < 1e-6    # cos(π/2) = 0
-    assert abs(out_cov_df.loc["cos_t", "S3"] - (-1.0)) < 1e-6  # cos(π) = -1
+    assert list(out_cov_df.index) == ["PC1"]
 
     out_int_df = pd.read_csv(str(out_int), sep="\t", index_col=0)
     assert list(out_int_df.columns) == ["cos_t", "sin_t"]
     assert list(out_int_df.index) == ["S1", "S2", "S3"]
+    assert abs(out_int_df.loc["S1", "cos_t"] - 1.0) < 1e-6    # cos(0) = 1
+    assert abs(out_int_df.loc["S2", "cos_t"] - 0.0) < 1e-6    # cos(π/2) = 0
+    assert abs(out_int_df.loc["S3", "cos_t"] - (-1.0)) < 1e-6  # cos(π) = -1
 
 
 def test_main_cli_missing_samples_raises(tmp_path):
@@ -237,3 +239,63 @@ def test_main_cli_missing_samples_raises(tmp_path):
     )
     assert result.returncode != 0
     assert "S3" in result.stderr or "S3" in result.stdout
+
+
+def _run_cli(tmp_path, cov_text, extra_args=()):
+    meta = tmp_path / "meta.tsv"
+    meta.write_text("sample_id\thour\nS1\t0.0\nS2\t6.0\nS3\t12.0\n")
+    cov = tmp_path / "cov.txt"
+    cov.write_text(cov_text)
+    out_cov = tmp_path / "out_cov.txt"
+    out_int = tmp_path / "out_int.txt"
+    result = subprocess.run(
+        [
+            sys.executable,
+            os.path.join(os.path.dirname(__file__), "..", "scripts", "cosinor_preprocess.py"),
+            "--metadata", str(meta),
+            "--covariates", str(cov),
+            "--out-covariates", str(out_cov),
+            "--out-interaction", str(out_int),
+            "--time-col", "hour",
+            *extra_args,
+        ],
+        capture_output=True, text=True,
+    )
+    return result, out_int
+
+
+def test_main_cli_harmonics_2(tmp_path):
+    result, out_int = _run_cli(tmp_path, "ID\tS1\tS2\tS3\nPC1\t0.1\t0.2\t0.3\n",
+                               ["--harmonics", "2"])
+    assert result.returncode == 0, result.stderr
+    out_int_df = pd.read_csv(str(out_int), sep="\t", index_col=0)
+    assert list(out_int_df.columns) == ["cos_t", "sin_t", "cos2_t", "sin2_t"]
+    assert abs(out_int_df.loc["S2", "cos2_t"] - (-1.0)) < 1e-6  # 6 h -> pi for the 12 h harmonic
+
+
+def test_main_cli_cosinor_term_in_covariates_raises(tmp_path):
+    result, _ = _run_cli(tmp_path, "ID\tS1\tS2\tS3\nPC1\t0.1\t0.2\t0.3\ncos_t\t1\t0\t-1\n")
+    assert result.returncode != 0
+    assert "cos_t" in result.stderr
+
+
+def test_main_cli_toy_mode_harmonics_2(tmp_path):
+    meta = tmp_path / "meta.tsv"
+    meta.write_text("sample_id\tday\nS1\t1.0\nS2\t180.0\n")
+    cov = tmp_path / "cov.txt"
+    cov.write_text("ID\tS1\tS2\nPC1\t0.1\t0.2\n")
+    out_int = tmp_path / "out_int.txt"
+    result = subprocess.run(
+        [
+            sys.executable,
+            os.path.join(os.path.dirname(__file__), "..", "scripts", "cosinor_preprocess.py"),
+            "--metadata", str(meta), "--covariates", str(cov),
+            "--out-covariates", str(tmp_path / "out_cov.txt"),
+            "--out-interaction", str(out_int),
+            "--time-col", "day", "--mode", "toy", "--harmonics", "2",
+        ],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    out_int_df = pd.read_csv(str(out_int), sep="\t", index_col=0)
+    assert list(out_int_df.columns) == ["cos_t", "sin_t", "cos2_t", "sin2_t"]
