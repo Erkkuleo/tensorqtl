@@ -36,6 +36,9 @@ USAGE:
 
   # Only clock gene chromosomes (fast test)
   python scripts/puhti_pipeline.py --project <project_id> --step map --chroms 12,17
+
+  # Joint tests (default: --tests 2df). 4df/5df need the 12 h harmonic:
+  python scripts/puhti_pipeline.py --project <project_id> --all --harmonics 2 --tests 2df,4df
 """
 import argparse
 import gzip
@@ -63,6 +66,25 @@ VCF_BASE = ("https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data_collections/"
             "1000G_2504_high_coverage/working/20201028_3202_phased")
 
 ALL_CHROMS = [str(i) for i in range(1, 23)]
+VALID_TESTS = ["2df", "3df", "4df", "5df"]
+HARMONIC2_TESTS = {"4df", "5df"}  # tests that need cos2_t/sin2_t (see tensorqtl/cosinor.py)
+
+
+def joint_labels(tests):
+    """Output labels of the joint tests, e.g. ['cosinor_2df_h2', 'cosinor_4df_h2']."""
+    k = 2 if HARMONIC2_TESTS.intersection(tests) else 1
+    return [f"cosinor_{t}_h{k}" for t in tests]
+
+
+def padjust_bh(p):
+    """Benjamini-Hochberg adjusted p-values."""
+    p = np.asarray(p, dtype=float)
+    n = len(p)
+    o = np.argsort(p)[::-1]
+    q = np.minimum(1, np.minimum.accumulate(n / np.arange(n, 0, -1) * p[o]))
+    out = np.empty(n)
+    out[o] = q
+    return out
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -295,8 +317,8 @@ def step_chiral(dirs, n_iter=500, n_top=3000):
 # STEP 3 — COSINOR PREPROCESS
 # ════════════════════════════════════════════════════════════════════════════
 
-def step_preprocess(dirs):
-    print("\n=== STEP 3: Cosinor preprocessing (cos_t / sin_t) ===")
+def step_preprocess(dirs, harmonics=1):
+    print(f"\n=== STEP 3: Cosinor preprocessing (harmonics = {harmonics}) ===")
     run([
         sys.executable, "scripts/cosinor_preprocess.py",
         "--metadata",        str(dirs["data"] / "chiral_phases.tsv"),
@@ -304,6 +326,7 @@ def step_preprocess(dirs):
         "--out-covariates",  str(dirs["data"] / "covariates_cosinor.txt"),
         "--out-interaction", str(dirs["data"] / "interaction.txt"),
         "--time-col", "hour", "--mode", "tod",
+        "--harmonics", str(harmonics),
     ])
 
 
@@ -352,17 +375,18 @@ python3 scripts/run_cosinor_qtl.py \\
   --covariates   {data_dir}/covariates_cosinor.txt \\
   --interaction  {data_dir}/interaction.txt \\
   --output-dir   {out_dir} \\
-  --prefix       geuvadis.chiral \\
-  --cosinor-2df
+  --prefix       geuvadis.chiral.chr{chrom} \\
+  --tests        {tests}
 """
 
 
-def step_map(dirs, project, chroms=ALL_CHROMS, use_slurm=True):
-    print(f"\n=== STEP 4: cis-eQTL mapping ({len(chroms)} chromosomes) ===")
+def step_map(dirs, project, chroms=ALL_CHROMS, use_slurm=True, tests=("2df",)):
+    print(f"\n=== STEP 4: cis-eQTL mapping ({len(chroms)} chromosomes, tests: {','.join(tests)}) ===")
     workdir = Path.cwd()
 
     for chrom in chroms:
-        out_file = dirs["out"] / f"geuvadis.chiral.cis_qtl_pairs.chr{chrom}.parquet"
+        # one prefix per chromosome so the top-association tables are not overwritten
+        out_file = dirs["out"] / f"geuvadis.chiral.chr{chrom}.cis_qtl_pairs.chr{chrom}.parquet"
         if out_file.exists():
             print(f"  chr{chrom}: already done, skipping")
             continue
@@ -375,6 +399,7 @@ def step_map(dirs, project, chroms=ALL_CHROMS, use_slurm=True):
                 geno_dir=dirs["geno"], data_dir=dirs["data"],
                 out_dir=dirs["out"],
                 samples_file=dirs["raw"] / "samples_EUR.txt",
+                tests=",".join(tests),
             )
             slurm_path = dirs["tmp"] / f"slurm_chr{chrom}.sh"
             slurm_path.write_text(script)
@@ -382,14 +407,14 @@ def step_map(dirs, project, chroms=ALL_CHROMS, use_slurm=True):
                                     capture_output=True, text=True)
             print(f"  chr{chrom}: {result.stdout.strip()}")
         else:
-            _map_local(dirs, chrom)
+            _map_local(dirs, chrom, tests=tests)
 
     if use_slurm:
         print("\n  Jobs submitted. Monitor with: squeue -u $USER")
         print("  When all done, run: python scripts/puhti_pipeline.py --step plots")
 
 
-def _map_local(dirs, chrom):
+def _map_local(dirs, chrom, tests=("2df",)):
     """Download VCF, convert to pgen, run mapping (for login node / interactive)."""
     vcf_url = (f"{VCF_BASE}/CCDG_14151_B01_GRM_WGS_2020-08-05_"
                f"chr{chrom}.filtered.shapeit2-duohmm-phased.vcf.gz")
@@ -413,8 +438,8 @@ def _map_local(dirs, chrom):
         "--covariates",    str(dirs["data"] / "covariates_cosinor.txt"),
         "--interaction",   str(dirs["data"] / "interaction.txt"),
         "--output-dir",    str(dirs["out"]),
-        "--prefix",        "geuvadis.chiral",
-        "--cosinor-2df",
+        "--prefix",        f"geuvadis.chiral.chr{chrom}",
+        "--tests",         ",".join(tests),
     ], capture_output=True, text=True)
     print(result.stdout[-2000:])
     if result.returncode != 0:
@@ -431,15 +456,36 @@ def _map_local(dirs, chrom):
 # STEP 5 — PLOTS & SUMMARY
 # ════════════════════════════════════════════════════════════════════════════
 
-def step_plots(dirs):
+def _qq_panel(ax, pv, title):
+    pv  = pv[np.isfinite(pv)]
+    n   = len(pv)
+    obs = -np.log10(np.sort(pv).clip(1e-300))
+    exp = -np.log10(np.arange(1, n+1) / (n+1))
+    # 95% CI
+    idx = np.arange(1, n+1)
+    lo  = -np.log10(stats.beta.ppf(0.975, idx, n-idx+1).clip(1e-300))
+    hi  = -np.log10(stats.beta.ppf(0.025, idx, n-idx+1).clip(1e-300))
+    ax.fill_between(exp, lo, hi, color="grey", alpha=0.2)
+    ax.scatter(exp, obs, s=1, alpha=0.3, color="steelblue")
+    ax.plot([0, exp.max()], [0, exp.max()], "r--", lw=0.8)
+    # Lambda GC (median of 1-DF chi-squared quantiles; valid for any p-value)
+    chi2 = stats.chi2.ppf(1 - pv.clip(1e-300, 1), df=1)
+    lam  = np.median(chi2) / stats.chi2.ppf(0.5, df=1)
+    ax.set_title(f"{title}\nλ={lam:.3f}", fontsize=10)
+    ax.set_xlabel("Expected -log10(p)")
+    ax.set_ylabel("Observed -log10(p)")
+
+
+def step_plots(dirs, tests=("2df",)):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     print("\n=== STEP 5: Generating plots and summary ===")
+    labels = joint_labels(tests)
 
     # Load all parquets
-    parquets = sorted(dirs["out"].glob("geuvadis.chiral.cis_qtl_pairs.chr*.parquet"))
+    parquets = sorted(dirs["out"].glob("geuvadis.chiral.chr*.cis_qtl_pairs.chr*.parquet"))
     if not parquets:
         print("  No parquet files found. Run mapping first.")
         return
@@ -448,74 +494,59 @@ def step_plots(dirs):
     df     = pd.concat(frames, ignore_index=True)
     print(f"  Total variant-gene pairs: {len(df):,}")
     print(f"  Chromosomes:              {len(parquets)}")
+    missing = [f"pval_{l}" for l in labels if f"pval_{l}" not in df]
+    if missing:
+        print(f"  ERROR: columns {missing} not found. Re-run mapping with --tests {','.join(tests)} "
+              f"(and --harmonics 2 for 4df/5df).")
+        return
 
-    # ── QQ plot (2-DF ACAT) ────────────────────────────────────────────────
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-    for ax, col, title in zip(axes,
-            ["pval_g", "pval_g_x_cos_t", "pval_g_x_cosinor_2df"],
-            ["Main eQTL (pval_g)",
-             "1-DF interaction (cos_t)",
-             "2-DF cosinor ACAT"]):
-        pv = df[col].dropna().values
-        n  = len(pv)
-        obs = -np.log10(np.sort(pv).clip(1e-300))
-        exp = -np.log10(np.arange(1, n+1) / (n+1))
-        # 95% CI
-        idx   = np.arange(1, n+1)
-        lo    = -np.log10(stats.beta.ppf(0.975, idx, n-idx+1).clip(1e-300))
-        hi    = -np.log10(stats.beta.ppf(0.025, idx, n-idx+1).clip(1e-300))
-        ax.fill_between(exp, lo, hi, color="grey", alpha=0.2)
-        ax.scatter(exp, obs, s=1, alpha=0.3, color="steelblue")
-        ax.plot([0, exp.max()], [0, exp.max()], "r--", lw=0.8)
-        # Lambda GC
-        chi2 = stats.chi2.ppf(1 - pv.clip(1e-300, 1), df=1)
-        lam  = np.median(chi2) / stats.chi2.ppf(0.5, df=1)
-        ax.set_title(f"{title}\nλ={lam:.3f}", fontsize=10)
-        ax.set_xlabel("Expected -log10(p)")
-        ax.set_ylabel("Observed -log10(p)")
+    # ── QQ plots: main eQTL + one panel per joint test ─────────────────────
+    panels = [("pval_g", "Main eQTL (pval_g)")] + \
+             [(f"pval_{l}", f"{t.upper()} joint cosinor ({l})") for t, l in zip(tests, labels)]
+    fig, axes = plt.subplots(1, len(panels), figsize=(6 * len(panels), 5), squeeze=False)
+    for ax, (col, title) in zip(axes[0], panels):
+        _qq_panel(ax, df[col].dropna().values, title)
     plt.tight_layout()
     plt.savefig(dirs["plots"] / "qq_plots.png", dpi=150)
     plt.close()
     print("  Saved qq_plots.png")
 
-    # ── Manhattan plot (2-DF ACAT) ─────────────────────────────────────────
+    # ── Manhattan plots: one per joint test ────────────────────────────────
     chrom_rank = {f"chr{i}": i for i in range(1, 23)}
     chrom_rank.update({"chrX": 23})
     df["_cr"]  = df.get("variant_id", pd.Series(dtype=str)).apply(
         lambda v: chrom_rank.get("chr" + v.split("_")[0].replace("chr",""), 99)
         if isinstance(v, str) else 99
     )
-
-    # Use start_distance as x-axis proxy (relative to gene)
-    fig, ax = plt.subplots(figsize=(18, 5))
-    colors   = ["steelblue", "cornflowerblue"]
     chroms_present = sorted(df["_cr"].unique())
-    offset   = 0
-    xticks, xlabels = [], []
-    bonf     = 0.05 / len(df)
+    bonf = 0.05 / len(df)
 
-    for i, cr in enumerate(chroms_present):
-        sub  = df[df["_cr"] == cr].copy()
-        xpos = sub["start_distance"].fillna(0) + offset
-        logp = -np.log10(sub["pval_g_x_cosinor_2df"].clip(1e-300))
-        ax.scatter(xpos, logp, s=1, alpha=0.3, color=colors[i % 2])
-        mid = xpos.mean()
-        xticks.append(mid)
-        xlabels.append(str(cr) if cr <= 22 else "X")
-        offset = xpos.max() + 5_000_000
-
-    ax.axhline(-np.log10(bonf), color="red", lw=0.8, linestyle="--",
-               label=f"Bonferroni p={bonf:.1e}")
-    ax.set_xticks(xticks)
-    ax.set_xticklabels(xlabels, fontsize=7)
-    ax.set_xlabel("Chromosome")
-    ax.set_ylabel("-log10(p)  SNP × cosinor (2-DF)")
-    ax.set_title("Cosinor interaction eQTL — GEUVADIS, CHIRAL phases")
-    ax.legend(fontsize=8)
-    plt.tight_layout()
-    plt.savefig(dirs["plots"] / "manhattan_2df.png", dpi=150)
-    plt.close()
-    print("  Saved manhattan_2df.png")
+    for t, label in zip(tests, labels):
+        # Use start_distance as x-axis proxy (relative to gene)
+        fig, ax = plt.subplots(figsize=(18, 5))
+        colors  = ["steelblue", "cornflowerblue"]
+        offset  = 0
+        xticks, xlabels = [], []
+        for i, cr in enumerate(chroms_present):
+            sub  = df[df["_cr"] == cr]
+            xpos = sub["start_distance"].fillna(0) + offset
+            logp = -np.log10(sub[f"pval_{label}"].clip(1e-300))
+            ax.scatter(xpos, logp, s=1, alpha=0.3, color=colors[i % 2])
+            xticks.append(xpos.mean())
+            xlabels.append(str(cr) if cr <= 22 else "X")
+            offset = xpos.max() + 5_000_000
+        ax.axhline(-np.log10(bonf), color="red", lw=0.8, linestyle="--",
+                   label=f"Bonferroni p={bonf:.1e}")
+        ax.set_xticks(xticks)
+        ax.set_xticklabels(xlabels, fontsize=7)
+        ax.set_xlabel("Chromosome")
+        ax.set_ylabel(f"-log10(p)  SNP × cosinor ({t.upper()})")
+        ax.set_title(f"Cosinor interaction eQTL ({label}) — GEUVADIS, CHIRAL phases")
+        ax.legend(fontsize=8)
+        plt.tight_layout()
+        plt.savefig(dirs["plots"] / f"manhattan_{t}.png", dpi=150)
+        plt.close()
+        print(f"  Saved manhattan_{t}.png")
 
     # ── Phase distribution ─────────────────────────────────────────────────
     phases = pd.read_csv(dirs["data"] / "chiral_phases.tsv", sep="\t")
@@ -531,25 +562,45 @@ def step_plots(dirs):
     plt.close()
     print("  Saved phase_distribution.png")
 
-    # ── Top hits table ─────────────────────────────────────────────────────
-    top = df.nsmallest(50, "pval_g_x_cosinor_2df")[
-        ["phenotype_id", "variant_id", "af",
-         "pval_g", "b_g_x_cos_t", "pval_g_x_cos_t",
-         "b_g_x_sin_t", "pval_g_x_sin_t", "pval_g_x_cosinor_2df"]
-    ]
+    # ── Top hits table (ranked by the first test) ──────────────────────────
+    rank_col = f"pval_{labels[0]}"
+    cols = ["phenotype_id", "variant_id", "af", "pval_g",
+            "b_g_x_cos_t", "pval_g_x_cos_t", "b_g_x_sin_t", "pval_g_x_sin_t"]
+    cols += [f"pval_{l}" for l in labels]
+    top = df.nsmallest(50, rank_col)[[c for c in cols if c in df]]
     top.to_csv(dirs["out"] / "top50_cosinor_hits.tsv", sep="\t", index=False)
     print("  Saved top50_cosinor_hits.tsv")
-    print(f"\nTop 10 hits:")
-    print(top.head(10)[["phenotype_id","variant_id","pval_g","pval_g_x_cosinor_2df"]]
+    print(f"\nTop 10 hits (by {rank_col}):")
+    print(top.head(10)[["phenotype_id", "variant_id", "pval_g"] + [f"pval_{l}" for l in labels]]
           .to_string(index=False))
 
+    # ── Gene-level results: genome-wide BH on Bonferroni-adjusted top p ────
+    top_files = sorted(dirs["out"].glob("geuvadis.chiral.chr*.cis_qtl_top_assoc.txt.gz"))
+    genes = pd.concat([pd.read_csv(f, sep="\t", index_col=0) for f in top_files]) if top_files else None
+    if genes is not None:
+        for label in labels:
+            b = genes[f"pval_{label}_bonf"]
+            ok = b.notnull()
+            genes[f"qval_{label}"] = np.nan
+            genes.loc[ok, f"qval_{label}"] = padjust_bh(b[ok].values)  # across all chromosomes
+        genes.to_csv(dirs["out"] / "cosinor_top_assoc_all_chr.tsv.gz", sep="\t", float_format="%.6g")
+        print("  Saved cosinor_top_assoc_all_chr.tsv.gz (q-values recomputed genome-wide)")
+
     # ── Summary stats ──────────────────────────────────────────────────────
-    sig = df[df["pval_g_x_cosinor_2df"] < bonf]
     print(f"\nSummary:")
     print(f"  Total pairs tested:      {len(df):,}")
     print(f"  Bonferroni threshold:    {bonf:.2e}")
-    print(f"  Significant pairs:       {len(sig):,}")
-    print(f"  Significant genes:       {sig['phenotype_id'].nunique()}")
+    for label in labels:
+        sig = df[df[f"pval_{label}"] < bonf]
+        print(f"  {label}:")
+        print(f"    Significant pairs:     {len(sig):,}")
+        print(f"    Significant genes:     {sig['phenotype_id'].nunique()}")
+        if genes is not None:
+            print(f"    Genes with q < 0.05:   {int((genes[f'qval_{label}'] < 0.05).sum())}"
+                  f" (of {len(genes)}; Bonferroni within gene, BH across genes)")
+    if any(t in ("3df", "5df") for t in tests):
+        print("  Note: 3df/5df include the SNP main effect and are dominated by ordinary eQTLs;"
+              " read them together with pval_g and 2df/4df.")
     print(f"\nPlots saved to: {dirs['plots']}/")
 
 
@@ -596,7 +647,23 @@ def main():
                         help="CHIRAL EM iterations (default: 200).")
     parser.add_argument("--n-top-genes", type=int, default=500,
                         help="Top variable genes for CHIRAL (default: 500, fewer = less memory).")
+    parser.add_argument("--harmonics", type=int, choices=[1, 2], default=None,
+                        help="Cosinor harmonics written by the preprocess step: 1 = cos_t, sin_t; "
+                             "2 = also cos2_t, sin2_t (default: 2 if --tests includes 4df/5df, else 1).")
+    parser.add_argument("--tests", default="2df",
+                        help="Comma-separated joint tests from {2df,3df,4df,5df} (default: 2df). "
+                             "2df = 2-DF (2-DOF) joint sin/cos test. The first test ranks the top hits.")
     args = parser.parse_args()
+
+    tests = list(dict.fromkeys(t.strip() for t in args.tests.split(",") if t.strip()))
+    unknown = [t for t in tests if t not in VALID_TESTS]
+    if not tests or unknown:
+        parser.error(f"--tests must be a comma-separated list from {VALID_TESTS}")
+    needed = 2 if HARMONIC2_TESTS.intersection(tests) else 1
+    if args.harmonics is None:
+        args.harmonics = needed
+    elif args.harmonics < needed:
+        parser.error(f"--tests {args.tests} requires --harmonics 2")
 
     if not args.step and not args.all:
         parser.print_help()
@@ -615,12 +682,12 @@ def main():
         elif step == "chiral":
             step_chiral(dirs, n_iter=args.n_iter, n_top=args.n_top_genes)
         elif step == "preprocess":
-            step_preprocess(dirs)
+            step_preprocess(dirs, harmonics=args.harmonics)
         elif step == "map":
             step_map(dirs, args.project, chroms=chroms,
-                     use_slurm=not args.no_slurm)
+                     use_slurm=not args.no_slurm, tests=tests)
         elif step == "plots":
-            step_plots(dirs)
+            step_plots(dirs, tests=tests)
         print(f"  [{step}] done in {(time.time()-t0)/60:.1f} min")
 
 

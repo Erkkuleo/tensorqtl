@@ -33,5 +33,8 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 
+[project.optional-dependencies]
+test = ["pytest", "statsmodels", "pyarrow"]
+
 [project.urls]
 Repository = "https://github.com/broadinstitute/tensorqtl.git"

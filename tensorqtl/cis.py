@@ -130,7 +130,8 @@ def calculate_association(genotype_df, phenotype_s, covariates_df=None,
 def map_nominal(genotype_df, variant_df, phenotype_df, phenotype_pos_df, prefix,
                 covariates_df=None, paired_covariate_df=None, maf_threshold=0, interaction_df=None, maf_threshold_interaction=0.05,
                 group_s=None, window=1000000, run_eigenmt=False, logp=False,
-                output_dir='.', write_top=True, write_stats=True, logger=None, verbose=True):
+                output_dir='.', write_top=True, write_stats=True, logger=None, verbose=True,
+                joint_tests=None, top_by=None, min_bin_carriers=5):
     """
     cis-QTL mapping: nominal associations for all variant-phenotype pairs
 
@@ -140,6 +141,21 @@ def map_nominal(genotype_df, variant_df, phenotype_df, phenotype_pos_df, prefix,
     If interaction_df is provided, the top association per phenotype is
     written to <output_dir>/<prefix>.cis_qtl_top_assoc.txt.gz unless
     write_top is set to False, in which case it is returned as a DataFrame
+
+    Joint tests (interaction_df required):
+      joint_tests: dict {name: [column indices]} of joint Wald F-tests, with indices
+                   into [g, i_1 ... i_n, gi_1, ... gi_n] (see cosinor.build_joint_tests).
+                   Adds F_<name> and pval_<name> to the pairs output, and F_<name>,
+                   pval_<name>, pval_<name>_bonf, qval_<name> and num_var to the top
+                   associations.
+      top_by:      name of a joint test; the top association per phenotype is the
+                   variant with the smallest p-value for that test (default: max |t|
+                   across the g:i terms).
+
+    If interaction_df contains 'cos_t' and 'sin_t' columns (and more than one column)
+    and maf_threshold_interaction > 0, variants must also have at least
+    min_bin_carriers minor allele carriers in each time-of-day quadrant,
+    defined by atan2(sin_t, cos_t).
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -174,6 +190,8 @@ def map_nominal(genotype_df, variant_df, phenotype_df, phenotype_pos_df, prefix,
     elif maf_threshold > 0:
         logger.write(f'  * applying in-sample {maf_threshold} MAF filter')
     logger.write(f'  * cis-window: ±{window:,}')
+    if (joint_tests is not None or top_by is not None) and interaction_df is None:
+        raise ValueError('joint_tests and top_by require interaction_df.')
 
     genotype_ix = np.array([genotype_df.columns.tolist().index(i) for i in phenotype_df.columns])
     genotype_ix_t = torch.from_numpy(genotype_ix).to(device)
@@ -181,13 +199,46 @@ def map_nominal(genotype_df, variant_df, phenotype_df, phenotype_pos_df, prefix,
         ni = interaction_df.shape[1]
         dof -= 2 * ni
         interaction_t = torch.tensor(interaction_df.values, dtype=torch.float32).to(device)
+        interaction_bins_t = None
         if maf_threshold_interaction > 0 and ni == 1:
             mask_s = pd.Series(True, index=interaction_df.index)
             mask_s[interaction_df[interaction_df.columns[0]].sort_values(kind='mergesort').index[:interaction_df.shape[0]//2]] = False
             interaction_mask_t = torch.BoolTensor(mask_s.values).to(device)
+        elif maf_threshold_interaction > 0 and {'cos_t', 'sin_t'}.issubset(interaction_df.columns):
+            # cosinor terms: require minor allele carriers in each time-of-day quadrant
+            interaction_mask_t = None
+            angle = np.mod(np.arctan2(interaction_df['sin_t'].values, interaction_df['cos_t'].values), 2*np.pi)
+            quadrant = np.minimum((angle // (np.pi/2)).astype(int), 3)
+            interaction_bins_t = torch.tensor(np.stack([quadrant == q for q in range(4)])).to(device)
+            logger.write(f'    * requiring >= {min_bin_carriers} minor allele carriers in each time-of-day quadrant '
+                         f'(samples per quadrant: {np.bincount(quadrant, minlength=4).tolist()})')
         else:
             # TODO: implement filtering for multiple interactions?
             interaction_mask_t = None
+        filter_counts = {'tested': 0, 'removed': 0}
+
+        def _filter_interaction(genotypes_t):
+            if interaction_bins_t is None:
+                genotypes_t, mask_t = filter_maf_interaction(genotypes_t, interaction_mask_t=interaction_mask_t,
+                                                             maf_threshold_interaction=maf_threshold_interaction)
+            else:
+                genotypes_t, mask_t = filter_maf_interaction_bins(genotypes_t, interaction_bins_t,
+                                                                  maf_threshold_interaction=maf_threshold_interaction,
+                                                                  min_carriers=min_bin_carriers)
+            filter_counts['tested'] += mask_t.shape[0]
+            filter_counts['removed'] += int((~mask_t).sum())
+            return genotypes_t, mask_t
+
+        if joint_tests is not None:
+            if group_s is not None:
+                raise NotImplementedError('Joint tests are not supported for grouped phenotypes (group_s).')
+            for name, idx in joint_tests.items():
+                if len(idx) == 0 or len(set(idx)) != len(idx) or not all(0 <= i < 1 + 2*ni for i in idx):
+                    raise ValueError(f"Invalid column indices {idx} for joint test '{name}' "
+                                     f"(design columns: 0..{2*ni}).")
+            logger.write(f"    * joint Wald F-tests: {', '.join(f'{k} ({len(v)} DF)' for k, v in joint_tests.items())}")
+        if top_by is not None and (joint_tests is None or top_by not in joint_tests):
+            raise ValueError(f"top_by='{top_by}' must be one of the joint tests.")
         col_order = ['phenotype_id', 'variant_id', 'start_distance']
         if 'pos' not in phenotype_pos_df:
             col_order += ['end_distance']
@@ -248,6 +299,10 @@ def map_nominal(genotype_df, variant_df, phenotype_df, phenotype_pos_df, prefix,
             chr_res['pval_gi'] = np.empty([n, ni], dtype=np.float64)
             chr_res['b_gi'] =    np.empty([n, ni], dtype=np.float32)
             chr_res['b_gi_se'] = np.empty([n, ni], dtype=np.float32)
+        chr_joint = OrderedDict()  # joint test F statistics, added after the per-term columns
+        if joint_tests is not None:
+            for name in joint_tests:
+                chr_joint[f'F_{name}'] = np.empty(n, dtype=np.float64)
 
         start = 0
         if group_s is None:
@@ -284,22 +339,26 @@ def map_nominal(genotype_df, variant_df, phenotype_df, phenotype_pos_df, prefix,
                     tstat, slope, slope_se, af, ma_samples, ma_count = [i.cpu().numpy() for i in res]
                     n = len(variant_ids)
                 else:
-                    genotypes_t, mask_t = filter_maf_interaction(genotypes_t, interaction_mask_t=interaction_mask_t,
-                                                                 maf_threshold_interaction=maf_threshold_interaction)
+                    genotypes_t, mask_t = _filter_interaction(genotypes_t)
                     if genotypes_t.shape[0] > 0:
                         mask = mask_t.cpu().numpy()
                         variant_ids = variant_ids[mask]
                         res = calculate_interaction_nominal(genotypes_t, phenotype_t.unsqueeze(0), interaction_t,
                                                             residualizer=iresidualizer, return_sparse=False,
-                                                            variant_ids=variant_ids)
-                        tstat, b, b_se, af, ma_samples, ma_count = [i.cpu().numpy() for i in res]
+                                                            variant_ids=variant_ids, joint_tests=joint_tests)
+                        tstat, b, b_se, af, ma_samples, ma_count = [i.cpu().numpy() for i in res[:6]]
+                        if joint_tests is not None:
+                            F = {name: f_t.cpu().numpy() for name, f_t in res[6].items()}
                         start_distance = start_distance[mask]
                         if 'pos' not in phenotype_pos_df:
                             end_distance = end_distance[mask]
                         n = len(variant_ids)
 
                         # top association
-                        ix = np.nanargmax(np.abs(tstat[:,1+ni:]).max(1))  # top association among all interactions tested
+                        if top_by is None:
+                            ix = np.nanargmax(np.abs(tstat[:,1+ni:]).max(1))  # top association among all interactions tested
+                        else:
+                            ix = np.nanargmax(F[top_by])  # largest F = smallest joint p-value (same q and dof within a phenotype)
                         # index order: 0, 1, 1+ni, 2, 2+ni, 3, 3+ni, ...
                         order = [0] + [i if j % 2 == 0 else i+ni for i in range(1,ni+1) for j in range(2)]
                         top_s = [phenotype_id, variant_ids[ix], start_distance[ix]]
@@ -309,6 +368,10 @@ def map_nominal(genotype_df, variant_df, phenotype_df, phenotype_pos_df, prefix,
                         for i in order:
                             top_s += [tstat[ix,i], b[ix,i], b_se[ix,i]]
                         top_s = pd.Series(top_s, index=col_order)
+                        if joint_tests is not None:
+                            for name in joint_tests:
+                                top_s[f'F_{name}'] = F[name][ix]
+                            top_s['num_var'] = n
                         if run_eigenmt:  # compute eigenMT correction
                             top_s['tests_emt'] = eigenmt.compute_tests(genotypes_t, var_thresh=0.99, variant_window=200)
                         best_assoc.append(top_s)
@@ -339,6 +402,9 @@ def map_nominal(genotype_df, variant_df, phenotype_df, phenotype_pos_df, prefix,
                         chr_res['pval_gi'][start:start+n] = tstat[:,1+ni:]
                         chr_res['b_gi'][start:start+n]    = b[:,1+ni:]
                         chr_res['b_gi_se'][start:start+n] = b_se[:,1+ni:]
+                        if joint_tests is not None:
+                            for name in joint_tests:
+                                chr_joint[f'F_{name}'][start:start+n] = F[name]
 
                 start += n  # update pointer
         else:  # groups
@@ -372,8 +438,7 @@ def map_nominal(genotype_df, variant_df, phenotype_df, phenotype_pos_df, prefix,
                                                               dtype=torch.float32).to(device))
 
                 if interaction_df is not None:
-                    genotypes_t, mask_t = filter_maf_interaction(genotypes_t, interaction_mask_t=interaction_mask_t,
-                                                                 maf_threshold_interaction=maf_threshold_interaction)
+                    genotypes_t, mask_t = _filter_interaction(genotypes_t)
                     mask = mask_t.cpu().numpy()
                     variant_ids = variant_ids[mask]
                     start_distance = start_distance[mask]
@@ -470,11 +535,16 @@ def map_nominal(genotype_df, variant_df, phenotype_df, phenotype_pos_df, prefix,
                 start += n  # update pointer
 
         logger.write(f'    time elapsed: {(time.time()-start_time)/60:.2f} min')
+        if interaction_df is not None and interaction_bins_t is not None:
+            logger.write(f"    * interaction MAF/quadrant filter removed {filter_counts['removed']:,} "
+                         f"of {filter_counts['tested']:,} variant-phenotype pairs so far")
 
         # convert to dataframe, compute p-values and write current chromosome
         if start < len(chr_res['af']):
             for x in chr_res:
                 chr_res[x] = chr_res[x][:start]
+            for x in chr_joint:
+                chr_joint[x] = chr_joint[x][:start]
 
         if write_stats:  # write full summary stats for current chromosome
             if interaction_df is not None:
@@ -529,6 +599,14 @@ def map_nominal(genotype_df, variant_df, phenotype_df, phenotype_pos_df, prefix,
                         chr_res_df.loc[m, f'pval_gi{i}'] = get_t_pval(chr_res_df.loc[m, f'pval_gi{i}'], idof, log=logp)
                     # substitute column headers
                     chr_res_df.rename(columns=var_dict, inplace=True)
+            if joint_tests is not None:
+                if paired_covariate_df is not None:
+                    jdof = dof - chr_res_df['phenotype_id'].isin(paired_covariate_df.columns).astype(int).values
+                else:
+                    jdof = dof
+                for name, idx in joint_tests.items():
+                    chr_res_df[f'F_{name}'] = chr_joint[f'F_{name}']
+                    chr_res_df[f'pval_{name}'] = cosinor.get_f_pval(chr_joint[f'F_{name}'], len(idx), jdof, log=logp)
             print('    * writing output')
             chr_res_df.to_parquet(os.path.join(output_dir, f'{prefix}.cis_qtl_pairs.{chrom}.parquet'))
 
@@ -556,7 +634,35 @@ def map_nominal(genotype_df, variant_df, phenotype_df, phenotype_pos_df, prefix,
             for i in range(1, ni+1):
                 best_assoc.loc[m, f'pval_i{i}'] =  get_t_pval(best_assoc.loc[m, f'pval_i{i}'], idof, log=logp)
                 best_assoc.loc[m, f'pval_gi{i}'] = get_t_pval(best_assoc.loc[m, f'pval_gi{i}'], idof, log=logp)
-        if run_eigenmt and ni == 1:  # leave correction of specific p-values up to user for now (TODO)
+        if joint_tests is not None:
+            if paired_covariate_df is not None:
+                jdof = dof - best_assoc.index.isin(paired_covariate_df.columns).astype(int)
+            else:
+                jdof = dof
+            best_assoc['num_var'] = best_assoc['num_var'].astype(np.int32)
+            joint_cols = ['num_var']
+            joint_pval = {}  # linear-scale p-values
+            for name, idx in joint_tests.items():
+                F_ = best_assoc[f'F_{name}'].astype(np.float64).values
+                pval = cosinor.get_f_pval(F_, len(idx), jdof, log=logp)
+                pval_lin = 10**(-pval) if logp else pval
+                # Bonferroni across the cis variants tested for each phenotype, then BH across phenotypes
+                bonf = np.minimum(1, pval_lin * best_assoc['num_var'].values)
+                qval = np.full(len(bonf), np.nan)
+                ok = np.isfinite(bonf)
+                if ok.any():
+                    qval[ok] = eigenmt.padjust_bh(bonf[ok])
+                best_assoc[f'F_{name}'] = F_
+                best_assoc[f'pval_{name}'] = pval
+                best_assoc[f'pval_{name}_bonf'] = -np.log10(bonf) if logp else bonf
+                best_assoc[f'qval_{name}'] = qval
+                joint_pval[name] = pval_lin
+                joint_cols += [f'F_{name}', f'pval_{name}', f'pval_{name}_bonf', f'qval_{name}']
+            best_assoc = best_assoc[[c for c in best_assoc.columns if c not in joint_cols] + joint_cols]
+        if run_eigenmt and top_by is not None:  # eigenMT correction of the joint test used to select the top variant
+            best_assoc['pval_emt'] = np.minimum(best_assoc['tests_emt'] * joint_pval[top_by], 1)
+            best_assoc['pval_adj_bh'] = eigenmt.padjust_bh(best_assoc['pval_emt'])
+        elif run_eigenmt and ni == 1:  # leave correction of specific p-values up to user for now (TODO)
             if group_s is None:
                 best_assoc['pval_emt'] = np.minimum(best_assoc['tests_emt']*best_assoc['pval_gi'], 1)
             else:
