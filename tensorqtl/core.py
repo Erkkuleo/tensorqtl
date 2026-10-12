@@ -5,8 +5,12 @@ import scipy.stats as stats
 import scipy.optimize
 from scipy.special import loggamma
 import sys
+import os
 import re
 import subprocess
+
+sys.path.insert(1, os.path.dirname(__file__))
+import cosinor
 
 # check R
 has_rpy2 = False
@@ -121,6 +125,26 @@ def filter_maf_interaction(genotypes_t, interaction_mask_t=None, maf_threshold_i
     return genotypes_t, mask_t
 
 
+def filter_maf_interaction_bins(genotypes_t, bin_masks_t, maf_threshold_interaction=0.05, min_carriers=5):
+    """
+    Filter variants for interactions defined by several columns (e.g., cosinor terms),
+    with samples grouped into bins (e.g., time-of-day quadrants). Keeps variants that
+      - are not monomorphic,
+      - have MAF >= maf_threshold_interaction across all samples, and
+      - have >= min_carriers minor allele carriers in every bin.
+
+    bin_masks_t: [num_bins x num_samples] boolean
+    """
+    mask_t = ~((genotypes_t==0).all(1) | (genotypes_t==1).all(1) | (genotypes_t==2).all(1))
+    mask_t = mask_t & (calculate_maf(genotypes_t) >= maf_threshold_interaction - 1e-7)
+    af_t = genotypes_t.sum(1) / (2 * genotypes_t.shape[1])
+    carriers_t = torch.where((af_t <= 0.5).unsqueeze(1), genotypes_t > 0.5, genotypes_t < 1.5)  # genotypes x samples
+    counts_t = torch.matmul(carriers_t.float(), bin_masks_t.float().t())  # genotypes x bins
+    mask_t = mask_t & (counts_t >= min_carriers).all(1)
+    genotypes_t = genotypes_t[mask_t]
+    return genotypes_t, mask_t
+
+
 def impute_mean(genotypes_t, missing=-9):
     """Impute missing genotypes to mean"""
     m = genotypes_t == missing
@@ -179,7 +203,8 @@ def get_t_pval(t, df, log=False):
 
 
 def calculate_interaction_nominal(genotypes_t, phenotypes_t, interaction_t, residualizer=None,
-                                  return_sparse=False, tstat_threshold=None, variant_ids=None):
+                                  return_sparse=False, tstat_threshold=None, variant_ids=None,
+                                  joint_tests=None):
     """
     Solve y ~ g + i + g:i, where i is an interaction vector or matrix
 
@@ -187,12 +212,16 @@ def calculate_interaction_nominal(genotypes_t, phenotypes_t, interaction_t, resi
       genotypes_t:   [num_genotypes x num_samples]
       phenotypes_t:  [num_phenotypes x num_samples]
       interaction_t: [num_samples x num_interactions]
+      joint_tests:   optional dict {name: [column indices]} of joint Wald F-tests,
+                     with column indices into [g, i_1 ... i_n, gi_1, ... gi_n]
+                     (single phenotype, dense output only)
 
     Outputs
     if return_sparse is False (default):
       tstat_t, b_t, b_se_t, af_t, ma_samples_t, ma_count_t
       tstat_t, b_t, b_se_t columns: [g, i_1 ... i_n, gi_1, ... gi_n]
                                     where n is the number of interactions
+      if joint_tests is provided, a dict {name: F_t} is appended to the outputs
     if return_sparse is True:
       tstat_g_t, tstat_i_t, tstat_gi_t, af_t, ix
       ix: indexes [genotype, phenotype]
@@ -200,6 +229,8 @@ def calculate_interaction_nominal(genotypes_t, phenotypes_t, interaction_t, resi
     ng, ns = genotypes_t.shape
     nps = phenotypes_t.shape[0]
     ni = interaction_t.shape[1]
+    if joint_tests is not None and (nps > 1 or return_sparse):
+        raise NotImplementedError("Joint tests are only supported for a single phenotype with dense output")
 
     # centered inputs
     g0_t = genotypes_t - genotypes_t.mean(1, keepdim=True)  # genotypes x samples
@@ -219,6 +250,9 @@ def calculate_interaction_nominal(genotypes_t, phenotypes_t, interaction_t, resi
 
     # regression (in float; loss of precision may occur in edge cases)
     X_t = torch.cat([g0_t.unsqueeze(-1), i0_t, gi0_t], 2)  # ng x ns x (1+2*ni)
+    if joint_tests is not None:  # joint tests need the full (X'X)^-1 block; use double precision
+        X_t = X_t.double()
+        p0_t = p0_t.double()
     try:
         Xinv = torch.matmul(torch.transpose(X_t, 1, 2), X_t).inverse() # ng x (1+2*ni) x (1+2*ni)
     except Exception as e:
@@ -251,7 +285,7 @@ def calculate_interaction_nominal(genotypes_t, phenotypes_t, interaction_t, resi
         # convert to ng x np x 3??
         r_t = torch.matmul(X_t, b_t) - torch.transpose(p0_tile_t, 1, 2)  # (ng x ns x np)
         rss_t = (r_t*r_t).sum(1)  # ng x np
-        b_se_t = torch.sqrt(Xinv[:, torch.eye(nb, dtype=torch.uint8).bool()].unsqueeze(-1).repeat([1,1,nps]) * rss_t.unsqueeze(1).repeat([1,3,1]) / dof)
+        b_se_t = torch.sqrt(Xinv[:, torch.eye(nb, dtype=torch.uint8).bool()].unsqueeze(-1).repeat([1,1,nps]) * rss_t.unsqueeze(1).repeat([1,nb,1]) / dof)
         # b_se_t = tf.sqrt(tf.tile(tf.expand_dims(tf.matrix_diag_part(Xinv), 2), [1,1,nps]) * tf.tile(tf.expand_dims(rss_t, 1), [1,3,1]) / dof) # (ng x 3) -> (ng x 3 x np)
 
     tstat_t = (b_t.double() / b_se_t.double()).float()  # (ng x nb x np)
@@ -261,7 +295,11 @@ def calculate_interaction_nominal(genotypes_t, phenotypes_t, interaction_t, resi
         # calculate pval
         # pval_t = tf.scalar_mul(2, tdist.cdf(-tf.abs(tstat_t)))  # (ng x 3 x np)
         af_t, ma_samples_t, ma_count_t = get_allele_stats(genotypes_t)
-        return tstat_t, b_t, b_se_t, af_t, ma_samples_t, ma_count_t
+        if joint_tests is None:
+            return tstat_t, b_t, b_se_t, af_t, ma_samples_t, ma_count_t
+        else:
+            F_t = {k: cosinor.joint_wald_f(b_t, Xinv, rss_t, dof, idx) for k, idx in joint_tests.items()}
+            return tstat_t, b_t, b_se_t, af_t, ma_samples_t, ma_count_t, F_t
 
     else:  # sparse output
         if ni > 1:
