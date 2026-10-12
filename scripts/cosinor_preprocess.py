@@ -53,20 +53,31 @@ def parse_time_to_day_of_year(value: str) -> float:
         )
 
 
-def compute_cosinor(hours: pd.Series, period: float = 24.0) -> tuple:
+def compute_cosinor(hours: pd.Series, period: float = 24.0, harmonics: int = 1) -> tuple:
     """Compute cosine and sine time encodings for circadian eQTL mapping.
 
     Args:
         hours: Series indexed by sample ID, values are fractional hours (0-24).
         period: Cycle period in hours (default 24.0 for circadian rhythm).
+        harmonics: 1 = fundamental only; 2 = also the second harmonic (period/2).
 
     Returns:
-        Tuple of (cos_t, sin_t), each a named Series indexed by sample ID.
+        (cos_t, sin_t) for harmonics=1, or (cos_t, sin_t, cos2_t, sin2_t) for
+        harmonics=2; each a named Series indexed by sample ID.
     """
+    if harmonics not in (1, 2):
+        raise ValueError(f"harmonics must be 1 or 2, got {harmonics}")
     angle = 2.0 * math.pi * hours / period
-    cos_t = pd.Series(np.cos(angle.values), index=hours.index, name="cos_t")
-    sin_t = pd.Series(np.sin(angle.values), index=hours.index, name="sin_t")
-    return cos_t, sin_t
+    terms = [
+        pd.Series(np.cos(angle.values), index=hours.index, name="cos_t"),
+        pd.Series(np.sin(angle.values), index=hours.index, name="sin_t"),
+    ]
+    if harmonics == 2:
+        terms += [
+            pd.Series(np.cos(2.0 * angle.values), index=hours.index, name="cos2_t"),
+            pd.Series(np.sin(2.0 * angle.values), index=hours.index, name="sin2_t"),
+        ]
+    return tuple(terms)
 
 
 def load_metadata(path: str, time_col: str, mode: str = "tod") -> pd.Series:
@@ -120,24 +131,49 @@ def load_covariates(path: str) -> pd.DataFrame:
 
 
 
-def make_interaction_df(cos_t: pd.Series, sin_t: pd.Series) -> pd.DataFrame:
-    """Create a tensorQTL interaction DataFrame with cos_t and sin_t terms.
+def make_interaction_df(*terms: pd.Series) -> pd.DataFrame:
+    """Create a tensorQTL interaction DataFrame from cosinor terms.
 
-    Both columns are passed to tensorQTL as interaction terms. Use
-    --cosinor-2df in run_cosinor_qtl.py to compute the joint 2-DF p-value.
+    Pass the Series returned by compute_cosinor: (cos_t, sin_t) or
+    (cos_t, sin_t, cos2_t, sin2_t). All columns are passed to tensorQTL as
+    interaction terms; run_cosinor_qtl.py --tests computes the joint tests.
 
     Returns:
-        DataFrame with sample IDs as index, columns ['cos_t', 'sin_t'].
+        DataFrame with sample IDs as index, columns ['cos_t', 'sin_t'] or
+        ['cos_t', 'sin_t', 'cos2_t', 'sin2_t'] (in the order given).
     """
-    return pd.DataFrame({"cos_t": cos_t, "sin_t": sin_t})
+    if len(terms) not in (2, 4):
+        raise ValueError(f"Expected 2 or 4 cosinor terms, got {len(terms)}")
+    names = ["cos_t", "sin_t", "cos2_t", "sin2_t"][:len(terms)]
+    return pd.DataFrame(dict(zip(names, terms)))
+
+
+def check_no_overlap(covariates_df: pd.DataFrame, interaction_df: pd.DataFrame) -> None:
+    """Raise if an interaction column is also a covariate.
+
+    tensorQTL enters every interaction column as a main effect, so the same
+    term in the covariates makes the design matrix singular.
+
+    Args:
+        covariates_df: covariate names as index (tensorQTL file layout).
+        interaction_df: interaction terms as columns.
+    """
+    overlap = [c for c in interaction_df.columns if c in covariates_df.index]
+    if overlap:
+        raise ValueError(
+            f"Interaction term(s) {overlap} also present in the covariates. "
+            "tensorQTL already includes interaction terms as main effects; "
+            "remove them from the covariates file."
+        )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Compute cosinor (circadian) covariates for tensorQTL interaction mapping. "
-            "Appends cos_t and sin_t to an existing covariates file and writes a separate "
-            "interaction file containing only cos_t."
+            "Compute cosinor (circadian) terms for tensorQTL interaction mapping. "
+            "Writes an interaction file with cos_t and sin_t (plus cos2_t and sin2_t "
+            "with --harmonics 2), and copies the covariates file after checking that "
+            "it does not already contain these terms."
         )
     )
     parser.add_argument("--metadata", required=True,
@@ -145,9 +181,10 @@ def main() -> None:
     parser.add_argument("--covariates", required=True,
                         help="Existing tensorQTL covariates file (rows=covariates, cols=samples).")
     parser.add_argument("--out-covariates", required=True,
-                        help="Output path for updated covariates (existing rows + cos_t + sin_t).")
+                        help="Output path for the covariates (copied unchanged; cosinor terms are "
+                             "not added because tensorQTL includes interaction terms as main effects).")
     parser.add_argument("--out-interaction", required=True,
-                        help="Output path for interaction file (samples x 1 column: cos_t).")
+                        help="Output path for the interaction file (samples x cos_t, sin_t[, cos2_t, sin2_t]).")
     parser.add_argument("--time-col", default="hour",
                         help="Column name for time values in metadata (default: 'hour').")
     parser.add_argument("--mode", choices=["tod", "toy"], default="tod",
@@ -161,6 +198,9 @@ def main() -> None:
     parser.add_argument("--period", type=float, default=None,
                         help="Cycle period (default: 24.0 for tod, 365.25 for toy). "
                              "Override with this flag if needed.")
+    parser.add_argument("--harmonics", type=int, choices=[1, 2], default=1,
+                        help="1 = cos_t, sin_t (24 h rhythm); 2 = also cos2_t, sin2_t "
+                             "(12 h harmonic, needed for the 4df/5df tests). Default: 1.")
     args = parser.parse_args()
 
     if args.period is None:
@@ -185,14 +225,20 @@ def main() -> None:
         sys.exit(1)
 
     hours_aligned = hours.loc[covariate_samples]
-    cos_t, sin_t = compute_cosinor(hours_aligned, period=args.period)
+    terms = compute_cosinor(hours_aligned, period=args.period, harmonics=args.harmonics)
+    interaction_df = make_interaction_df(*terms)
+    try:
+        check_no_overlap(covariates_df, interaction_df)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(1)
 
     covariates_df.to_csv(args.out_covariates, sep="\t")
     print(f"Wrote covariates ({covariates_df.shape[0]} rows) to {args.out_covariates}")
 
-    interaction_df = make_interaction_df(cos_t, sin_t)
     interaction_df.to_csv(args.out_interaction, sep="\t")
-    print(f"Wrote interaction file ({interaction_df.shape[0]} samples) to {args.out_interaction}")
+    print(f"Wrote interaction file ({interaction_df.shape[0]} samples x "
+          f"{list(interaction_df.columns)}) to {args.out_interaction}")
 
 
 if __name__ == "__main__":
