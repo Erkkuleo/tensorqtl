@@ -1,18 +1,29 @@
 #!/usr/bin/env python3
 """tensorQTL runner for cosinor (circadian) cis-eQTL interaction mapping.
 
-Runs interaction tests for circadian eQTL mapping. Two modes:
+Model fitted per gene and cis variant (covariates partialled out):
 
-  Default (2-DF):  SNP*cos_t + SNP*sin_t interaction terms are both tested.
-                   Use --cosinor-2df to add a joint 2-DF p-value column.
+    harmonics = 1:  y ~ g + c1 + s1 + g:c1 + g:s1 + covariates
+    harmonics = 2:  y ~ g + c1 + s1 + c2 + s2 + g:c1 + g:s1 + g:c2 + g:s2 + covariates
 
-Model fitted per gene:
-    expression ~ SNP + cos_t + sin_t + SNP*cos_t + SNP*sin_t + other_covariates
+with c1, s1 = cos_t, sin_t (24 h) and c2, s2 = cos2_t, sin2_t (12 h), taken
+from the --interaction file written by cosinor_preprocess.py. tensorQTL enters
+each interaction column as a main effect, so these terms must not also be in
+the covariates.
 
-cos_t and sin_t enter as regular covariates (via --covariates from
-cosinor_preprocess.py). cos_t additionally enters as the interaction
-term (via --interaction). This is a 1-DF test; for the 2-DF upgrade
-see docs/cosinor_eqtl.md.
+Joint Wald F-tests (--tests, comma-separated):
+
+    2df  g:c1, g:s1                 2-DF (2-DOF) joint sin/cos test: genotype
+                                    changes 24 h amplitude and/or phase
+    3df  g, g:c1, g:s1              mesor shift and/or 24 h rhythm change
+    4df  g:c1, g:s1, g:c2, g:s2     rhythm shape change at 24 h or 12 h
+    5df  g, g:c1 ... g:s2           any genotype effect (dominated by ordinary eQTLs)
+
+2df/3df alone are computed from the harmonics = 1 model. If 4df or 5df is
+requested, all tests come from the single harmonics = 2 fit; the output
+column names record this (pval_cosinor_2df_h1 vs pval_cosinor_2df_h2).
+The top association per gene is chosen by the first test in --tests.
+See docs/cosinor_eqtl.md.
 """
 import argparse
 import os
@@ -66,6 +77,72 @@ def validate_sample_alignment(
         )
 
 
+def _tensorqtl_path() -> None:
+    """Make tensorqtl submodules importable directly (without tensorqtl/__init__.py,
+    which imports optional dependencies)."""
+    _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    _pkg_dir = os.path.join(_repo_root, "tensorqtl")
+    for _p in (_pkg_dir, _repo_root):
+        if _p not in sys.path:
+            sys.path.insert(1, _p)
+
+
+def check_no_overlap(covariates_df: pd.DataFrame, interaction_df: pd.DataFrame) -> None:
+    """Raise if an interaction term is also a covariate (singular design matrix).
+
+    Args:
+        covariates_df: samples x covariates
+        interaction_df: samples x interactions
+    """
+    overlap = [c for c in interaction_df.columns if c in covariates_df.columns]
+    if overlap:
+        raise ValueError(
+            f"Interaction term(s) {overlap} also present in the covariates. "
+            "tensorQTL already includes interaction terms as main effects; "
+            "remove them from the covariates file."
+        )
+
+
+def parse_tests(value: str) -> list:
+    """Parse a comma-separated --tests value, e.g. '2df,4df'."""
+    _tensorqtl_path()
+    import cosinor  # type: ignore[import]
+    tests = [t.strip() for t in value.split(",") if t.strip()]
+    if not tests:
+        raise ValueError("--tests must name at least one test")
+    unknown = [t for t in tests if t not in cosinor.COSINOR_TESTS]
+    if unknown:
+        raise ValueError(f"Unknown test(s) {unknown}; choose from {list(cosinor.COSINOR_TESTS)}")
+    return list(dict.fromkeys(tests))  # drop duplicates, keep order
+
+
+def prepare_interaction(interaction_df: pd.DataFrame, tests: list) -> pd.DataFrame:
+    """Select the cosinor columns of the model needed for the requested tests.
+
+    2df/3df only -> harmonics = 1 model (cos_t, sin_t), even if the file also
+    has cos2_t/sin2_t; any of 4df/5df -> harmonics = 2 model.
+
+    Raises:
+        ValueError: if the interaction file lacks the required columns.
+    """
+    _tensorqtl_path()
+    import cosinor  # type: ignore[import]
+    harmonics = cosinor.model_harmonics(tests)
+    required = cosinor.HARMONIC_COLUMNS[harmonics]
+    missing = [c for c in required if c not in interaction_df.columns]
+    if missing:
+        need = [t for t in tests if cosinor.COSINOR_TESTS[t]["harmonics"] == harmonics]
+        hint = (" Re-run cosinor_preprocess.py with --harmonics 2." if harmonics == 2 else "")
+        raise ValueError(
+            f"--tests {','.join(need)} requires interaction columns {required}, "
+            f"but the interaction file is missing {missing}.{hint}"
+        )
+    extra = [c for c in interaction_df.columns if c not in required]
+    if extra:
+        print(f"  * using the harmonics = {harmonics} model; ignoring interaction columns {extra}")
+    return interaction_df[required]
+
+
 def load_inputs(
     plink_prefix: str,
     phenotypes_path: str,
@@ -78,23 +155,17 @@ def load_inputs(
         plink_prefix: Prefix for PLINK2 pgen/psam/pvar files (no extension).
         phenotypes_path: Expression BED file (.bed.gz or .bed.parquet).
         covariates_path: Covariates file (rows=covariates, cols=samples).
-        interaction_path: Interaction file (rows=samples, col header=cos_t).
+        interaction_path: Interaction file (rows=samples, cols=cos_t, sin_t[, cos2_t, sin2_t]).
 
     Returns:
         (genotype_df, variant_df, phenotype_df, phenotype_pos_df,
          covariates_df, interaction_df)
 
         covariates_df: samples x covariates (transposed from file)
-        interaction_df: samples x 1, indexed by sample IDs
+        interaction_df: samples x interactions, indexed by sample IDs
     """
     try:
-        _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        _pkg_dir = os.path.join(_repo_root, "tensorqtl")
-        # Insert the package directory so submodules can be imported directly
-        # (without triggering tensorqtl/__init__.py which imports optional deps).
-        for _p in (_pkg_dir, _repo_root):
-            if _p not in sys.path:
-                sys.path.insert(1, _p)
+        _tensorqtl_path()
         import genotypeio  # type: ignore[import]
         from core import read_phenotype_bed  # type: ignore[import]
     except ImportError as e:
@@ -149,32 +220,31 @@ def run_cosinor_mapping(
     prefix: str,
     output_dir: str,
     window: int = 1_000_000,
+    tests: list = ("2df",),
 ) -> None:
-    """Run tensorQTL cis nominal mapping with the cos_t interaction term.
+    """Run tensorQTL cis nominal mapping with cosinor interaction terms.
 
     Writes per-chromosome results to:
         <output_dir>/<prefix>.cis_qtl_pairs.<chr>.parquet
-    and the top association per gene to:
+    and the top association per gene (by the first test in `tests`) to:
         <output_dir>/<prefix>.cis_qtl_top_assoc.txt.gz
 
-    Output columns follow standard tensorQTL format. For a single
-    interaction term named 'cos_t', the columns are:
-        pval_g, b_g, b_g_se          – main SNP effect
-        pval_cos_t, b_cos_t          – main interaction (cos_t) effect
-        pval_g_x_cos_t, b_g_x_cos_t – SNP x cos_t interaction effect
+    Pair columns, besides the standard tensorQTL per-term columns
+    (pval_g, pval_cos_t, pval_g_x_cos_t, b_g_x_cos_t, ...):
+        F_cosinor_<test>_h<k>, pval_cosinor_<test>_h<k>
+    Top-association columns additionally include num_var,
+    pval_cosinor_<test>_h<k>_bonf and qval_cosinor_<test>_h<k>.
     """
     try:
-        _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        _pkg_dir = os.path.join(_repo_root, "tensorqtl")
-        for _p in (_pkg_dir, _repo_root):
-            if _p not in sys.path:
-                sys.path.insert(1, _p)
+        _tensorqtl_path()
         import cis  # type: ignore[import]
+        import cosinor  # type: ignore[import]
     except ImportError as e:
         raise ImportError(
             "tensorqtl is not installed. Install it or run from the repo root."
         ) from e
 
+    joint_tests = cosinor.build_joint_tests(list(tests), interaction_df.columns)
     os.makedirs(output_dir, exist_ok=True)
     cis.map_nominal(
         genotype_df,
@@ -188,6 +258,8 @@ def run_cosinor_mapping(
         output_dir=output_dir,
         write_top=True,
         write_stats=True,
+        joint_tests=joint_tests,
+        top_by=next(iter(joint_tests)),
     )
 
 
@@ -210,17 +282,12 @@ def _acat(p1: "pd.Series", p2: "pd.Series") -> "pd.Series":
     return pd.Series(0.5 - np.arctan(T.values) / np.pi, index=p1.index)
 
 
-def compute_2df_pvalues(output_dir: str, prefix: str) -> None:
-    """Add a joint cosinor p-value column to each output parquet.
+def compute_acat_pvalues(output_dir: str, prefix: str) -> None:
+    """Add pval_g_x_cosinor_acat to each output parquet (comparison only).
 
-    Uses the ACAT (Aggregated Cauchy Association Test) to combine
-    pval_g_x_cos_t and pval_g_x_sin_t. Unlike the naive chi-squared sum of
-    t-statistics, ACAT is valid when the two tests are correlated — which
-    they are here, because the β_cos_t and β_sin_t estimators share the
-    same genotype column and are estimated jointly.
-
-    The resulting pval_g_x_cosinor_2df tests whether the SNP effect varies
-    with time at any circadian phase (not just the cosine phase).
+    ACAT combination of pval_g_x_cos_t and pval_g_x_sin_t. This was the
+    previous "2-DF" p-value; it is not a joint test of both coefficients.
+    Use pval_cosinor_2df_h<k> (joint Wald F-test) for inference.
     Overwrites each parquet in-place with the new column appended.
     """
     parquets = sorted([
@@ -234,18 +301,19 @@ def compute_2df_pvalues(output_dir: str, prefix: str) -> None:
     for fname in parquets:
         path = os.path.join(output_dir, fname)
         df = pd.read_parquet(path)
-        df["pval_g_x_cosinor_2df"] = _acat(
+        df["pval_g_x_cosinor_acat"] = _acat(
             df["pval_g_x_cos_t"], df["pval_g_x_sin_t"]
         )
         df.to_parquet(path)
-        print(f"  Added pval_g_x_cosinor_2df (ACAT) to {fname}")
+        print(f"  Added pval_g_x_cosinor_acat to {fname}")
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Run cosinor cis-eQTL interaction mapping using tensorQTL. "
-            "Tests whether each SNP's effect on expression varies with time of day. "
+            "Tests whether each SNP's effect on expression varies with time of day "
+            "using joint Wald F-tests of the genotype x cosinor terms. "
             "Run cosinor_preprocess.py first to generate the required "
             "--covariates and --interaction files."
         )
@@ -257,37 +325,56 @@ def main() -> None:
     parser.add_argument("--covariates", required=True,
                         help="Covariates file output by cosinor_preprocess.py.")
     parser.add_argument("--interaction", required=True,
-                        help="Interaction file output by cosinor_preprocess.py (cos_t + sin_t columns).")
+                        help="Interaction file output by cosinor_preprocess.py "
+                             "(cos_t, sin_t; plus cos2_t, sin2_t with --harmonics 2).")
     parser.add_argument("--output-dir", required=True,
                         help="Directory to write result parquet files.")
     parser.add_argument("--prefix", required=True,
                         help="Output filename prefix (e.g. 'my_study.cosinor').")
     parser.add_argument("--window", type=int, default=1_000_000,
                         help="cis window size in bp (default: 1000000).")
+    parser.add_argument("--tests", default=None,
+                        help="Comma-separated joint tests from {2df,3df,4df,5df} (default: 2df). "
+                             "2df = 2-DF (2-DOF) joint sin/cos test of SNP x cos_t and SNP x sin_t; "
+                             "3df adds the SNP main effect; 4df = SNP x 24 h and 12 h terms "
+                             "(needs cos2_t/sin2_t); 5df = 4df + SNP main effect. "
+                             "The first test selects the top variant per gene.")
+    parser.add_argument("--also-acat", action="store_true",
+                        help="Also write pval_g_x_cosinor_acat (ACAT of the two 1-DF p-values, "
+                             "the previous approximation) for comparison.")
     parser.add_argument("--cosinor-2df", action="store_true",
-                        help="After mapping, compute a joint 2-DF cosinor p-value "
-                             "(pval_g_x_cosinor_2df) combining SNP×cos_t and SNP×sin_t. "
-                             "Requires the interaction file to have both cos_t and sin_t columns.")
-    args = parser.parse_args()
+                        help="Deprecated alias for --tests 2df.")
+    return parser
+
+
+def resolve_tests(args: argparse.Namespace) -> list:
+    """Tests to run, handling the deprecated --cosinor-2df alias."""
+    if args.cosinor_2df:
+        print("WARNING: --cosinor-2df is deprecated; use --tests 2df. "
+              "The joint 2-DF p-value is now a Wald F-test (pval_cosinor_2df_h<k>), not ACAT.",
+              file=sys.stderr)
+        if args.tests is None:
+            return ["2df"]
+        tests = parse_tests(args.tests)
+        return tests if "2df" in tests else ["2df"] + tests
+    return parse_tests(args.tests if args.tests is not None else "2df")
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    tests = resolve_tests(args)
 
     (genotype_df, variant_df, phenotype_df, phenotype_pos_df,
      covariates_df, interaction_df) = load_inputs(
         args.plink_prefix, args.phenotypes, args.covariates, args.interaction
     )
 
-    if args.cosinor_2df:
-        missing = [c for c in ("cos_t", "sin_t") if c not in interaction_df.columns]
-        if missing:
-            raise ValueError(
-                f"--cosinor-2df requires both 'cos_t' and 'sin_t' columns in the "
-                f"interaction file, but missing: {missing}"
-            )
-
+    interaction_df = prepare_interaction(interaction_df, tests)
     validate_sample_alignment(phenotype_df, covariates_df, interaction_df)
+    check_no_overlap(covariates_df, interaction_df)
 
-    mode = "2-DF joint (SNP × cos_t + SNP × sin_t)" if args.cosinor_2df else "per interaction term"
     print(
-        f"Running cosinor cis-QTL mapping [{mode}]\n"
+        f"Running cosinor cis-QTL mapping [joint tests: {', '.join(tests)}]\n"
         f"  phenotypes:        {phenotype_df.shape[0]}\n"
         f"  samples:           {phenotype_df.shape[1]}\n"
         f"  variants:          {variant_df.shape[0]}\n"
@@ -301,11 +388,12 @@ def main() -> None:
         prefix=args.prefix,
         output_dir=args.output_dir,
         window=args.window,
+        tests=tests,
     )
 
-    if args.cosinor_2df:
-        print("Computing joint 2-DF cosinor p-values...")
-        compute_2df_pvalues(args.output_dir, args.prefix)
+    if args.also_acat:
+        print("Computing ACAT p-values for comparison...")
+        compute_acat_pvalues(args.output_dir, args.prefix)
 
     print(f"Done. Results: {args.output_dir}/{args.prefix}.cis_qtl_pairs.*.parquet")
 
